@@ -77,7 +77,6 @@ class Maquina(Base):
     lat = Column(Float, nullable=True)
     lon = Column(Float, nullable=True)
 
-# Crear tablas (si no existen)
 Base.metadata.create_all(bind=engine)
 
 # ----- Crear usuarios de prueba (si no existen) -----
@@ -244,7 +243,7 @@ def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = For
     db.close()
     return {"mensaje": "Servicio finalizado"}
 
-# ----- Nuevos endpoints para parqueaderos y máquinas -----
+# ----- Endpoints para parqueaderos y máquinas -----
 @app.get("/parqueaderos")
 def listar_parqueaderos(user=Depends(get_current_user)):
     db = SessionLocal()
@@ -277,7 +276,7 @@ def jornada_activa(user=Depends(get_current_user)):
     db.close()
     return {"activa": activa is not None}
 
-# ----- Endpoint para insertar datos de prueba (solo líder/coordinador) CORREGIDO -----
+# ----- Endpoint para insertar datos de prueba (solo líder/coordinador) -----
 @app.post("/admin/insertar_datos_prueba")
 def insertar_datos_prueba(user=Depends(get_current_user)):
     if user.rol not in ["lider", "coordinador"]:
@@ -293,29 +292,31 @@ def insertar_datos_prueba(user=Depends(get_current_user)):
     p1 = Parqueadero(nombre="Parqueadero Centro", direccion="Calle 19 # 5-30", lat=4.598, lon=-74.071, ciudad="Bogotá")
     p2 = Parqueadero(nombre="Centro Comercial Unicentro", direccion="Cra 68 # 90-12", lat=4.676, lon=-74.077, ciudad="Bogotá")
     p3 = Parqueadero(nombre="Parqueadero El Dorado", direccion="Av. El Dorado", lat=4.701, lon=-74.146, ciudad="Bogotá")
-    db.add_all([p1, p2, p3])
+    p4 = Parqueadero(nombre="Parqueadero Chapinero", direccion="Calle 45 # 15-80", lat=4.641, lon=-74.065, ciudad="Bogotá")
+    p5 = Parqueadero(nombre="Parqueadero Salitre", direccion="Calle 24 # 60-10", lat=4.653, lon=-74.104, ciudad="Bogotá")
+    db.add_all([p1, p2, p3, p4, p5])
     db.commit()
     
     # Máquinas
     maquinas = []
-    for i, p in enumerate([p1, p2, p3], start=1):
+    for i, p in enumerate([p1, p2, p3, p4, p5], start=1):
         maquinas.extend([
             Maquina(codigo_qr=f"LPR_ENT_{i:03d}", nombre=f"LPR Entrada {i}", tipo="Camara", parqueadero_id=p.id),
             Maquina(codigo_qr=f"LPR_SAL_{i:03d}", nombre=f"LPR Salida {i}", tipo="Camara", parqueadero_id=p.id),
             Maquina(codigo_qr=f"BAR_AUT_{i:03d}", nombre=f"Barrera Automática {i}", tipo="Barrera", parqueadero_id=p.id),
             Maquina(codigo_qr=f"CAJ_{i:03d}", nombre=f"Cajero {i}", tipo="Cajero", parqueadero_id=p.id),
             Maquina(codigo_qr=f"CAM_PISO_{i:03d}", nombre=f"Cámara de Piso {i}", tipo="Camara", parqueadero_id=p.id),
+            Maquina(codigo_qr=f"CAM_LAT_{i:03d}", nombre=f"Cámara Lateral {i}", tipo="Camara", parqueadero_id=p.id),
         ])
     db.add_all(maquinas)
     db.commit()
     
-    # Contar correctamente
     num_parques = db.query(Parqueadero).count()
     num_maquinas = db.query(Maquina).count()
     db.close()
     return {"mensaje": f"Insertados {num_parques} parqueaderos y {num_maquinas} máquinas"}
 
-# Para correr localmente (Render usará uvicorn main:app --host 0.0.0.0 --port 10000)
+# Para correr localmente
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=10000)
