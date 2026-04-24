@@ -1,19 +1,16 @@
 from fastapi import FastAPI, HTTPException, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime, timedelta
 import bcrypt
 import jwt
 import math
 import os
 
-# ----- Configuración de base de datos (usará archivo local en Render) -----
-# Render te da un disco temporal, pero para datos persistentes puedes usar PostgreSQL (opcional).
-# Por simplicidad, usaremos SQLite (los datos se perderán si Render reinicia el servicio, pero para la demo sirve).
-# Si quieres persistencia real, después podemos migrar a PostgreSQL de Render (gratis).
+# ----- Configuración de base de datos -----
 engine = create_engine('sqlite:///parkops.db', connect_args={'check_same_thread': False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
@@ -61,6 +58,26 @@ class Jornada(Base):
     lat_fin = Column(Float, nullable=True)
     lon_fin = Column(Float, nullable=True)
 
+class Parqueadero(Base):
+    __tablename__ = 'parqueaderos'
+    id = Column(Integer, primary_key=True)
+    nombre = Column(String)
+    direccion = Column(String)
+    lat = Column(Float)
+    lon = Column(Float)
+    ciudad = Column(String)
+
+class Maquina(Base):
+    __tablename__ = 'maquinas'
+    id = Column(Integer, primary_key=True)
+    codigo_qr = Column(String, unique=True)
+    nombre = Column(String)
+    tipo = Column(String)
+    parqueadero_id = Column(Integer, ForeignKey('parqueaderos.id'))
+    lat = Column(Float, nullable=True)
+    lon = Column(Float, nullable=True)
+
+# Crear tablas
 Base.metadata.create_all(bind=engine)
 
 # ----- Crear usuarios de prueba (si no existen) -----
@@ -227,7 +244,77 @@ def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = For
     db.close()
     return {"mensaje": "Servicio finalizado"}
 
-# Para correr localmente (útil para pruebas, pero Render usará uvicorn command)
+# ----- Nuevos endpoints para parqueaderos y máquinas -----
+@app.get("/parqueaderos")
+def listar_parqueaderos(user=Depends(get_current_user)):
+    db = SessionLocal()
+    parques = db.query(Parqueadero).all()
+    db.close()
+    return [{"id": p.id, "nombre": p.nombre, "direccion": p.direccion, "lat": p.lat, "lon": p.lon, "ciudad": p.ciudad} for p in parques]
+
+@app.get("/parqueaderos/{parqueadero_id}/maquinas")
+def listar_maquinas(parqueadero_id: int, user=Depends(get_current_user)):
+    db = SessionLocal()
+    maquinas = db.query(Maquina).filter(Maquina.parqueadero_id == parqueadero_id).all()
+    db.close()
+    return [{"id": m.id, "nombre": m.nombre, "tipo": m.tipo, "codigo_qr": m.codigo_qr} for m in maquinas]
+
+@app.get("/maquinas/qr/{codigo_qr}")
+def buscar_maquina_por_qr(codigo_qr: str, user=Depends(get_current_user)):
+    db = SessionLocal()
+    maquina = db.query(Maquina).filter(Maquina.codigo_qr == codigo_qr).first()
+    db.close()
+    if not maquina:
+        raise HTTPException(404, "Máquina no encontrada")
+    return {"id": maquina.id, "nombre": maquina.nombre, "tipo": maquina.tipo, "parqueadero_id": maquina.parqueadero_id}
+
+@app.get("/tecnico/jornada_activa")
+def jornada_activa(user=Depends(get_current_user)):
+    if user.rol != 'tecnico':
+        raise HTTPException(403, "No autorizado")
+    db = SessionLocal()
+    activa = db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first()
+    db.close()
+    return {"activa": activa is not None}
+
+# ----- Endpoint para insertar datos de prueba (solo líder/coordinador) -----
+@app.post("/admin/insertar_datos_prueba")
+def insertar_datos_prueba(user=Depends(get_current_user)):
+    if user.rol not in ["lider", "coordinador"]:
+        raise HTTPException(403, "No autorizado")
+    db = SessionLocal()
+    
+    # Limpiar datos antiguos (opcional)
+    db.query(Maquina).delete()
+    db.query(Parqueadero).delete()
+    db.commit()
+    
+    # Crear parqueaderos
+    p1 = Parqueadero(nombre="Parqueadero Centro", direccion="Calle 19 # 5-30", lat=4.598, lon=-74.071, ciudad="Bogotá")
+    p2 = Parqueadero(nombre="Centro Comercial Unicentro", direccion="Cra 68 # 90-12", lat=4.676, lon=-74.077, ciudad="Bogotá")
+    p3 = Parqueadero(nombre="Parqueadero El Dorado", direccion="Av. El Dorado", lat=4.701, lon=-74.146, ciudad="Bogotá")
+    p4 = Parqueadero(nombre="Parqueadero Chapinero", direccion="Calle 45 # 15-80", lat=4.641, lon=-74.065, ciudad="Bogotá")
+    p5 = Parqueadero(nombre="Parqueadero Salitre", direccion="Calle 24 # 60-10", lat=4.653, lon=-74.104, ciudad="Bogotá")
+    db.add_all([p1, p2, p3, p4, p5])
+    db.commit()
+    
+    # Máquinas (cada parqueadero con una entrada y salida, barreras, cajero y cámaras)
+    maquinas = []
+    for i, p in enumerate([p1, p2, p3, p4, p5], start=1):
+        maquinas.extend([
+            Maquina(codigo_qr=f"LPR_ENT_{i:03d}", nombre=f"LPR Entrada {i}", tipo="Camara", parqueadero_id=p.id),
+            Maquina(codigo_qr=f"LPR_SAL_{i:03d}", nombre=f"LPR Salida {i}", tipo="Camara", parqueadero_id=p.id),
+            Maquina(codigo_qr=f"BAR_AUT_{i:03d}", nombre=f"Barrera Automática {i}", tipo="Barrera", parqueadero_id=p.id),
+            Maquina(codigo_qr=f"CAJ_{i:03d}", nombre=f"Cajero {i}", tipo="Cajero", parqueadero_id=p.id),
+            Maquina(codigo_qr=f"CAM_PISO_{i:03d}", nombre=f"Cámara de Piso {i}", tipo="Camara", parqueadero_id=p.id),
+            Maquina(codigo_qr=f"CAM_LAT_{i:03d}", nombre=f"Cámara Lateral {i}", tipo="Camara", parqueadero_id=p.id),
+        ])
+    db.add_all(maquinas)
+    db.commit()
+    db.close()
+    return {"mensaje": f"Insertados {Parqueadero.query.count()} parqueaderos y {len(maquinas)} máquinas"}
+
+# Para correr localmente
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=10000)
