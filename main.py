@@ -27,6 +27,12 @@ class User(Base):
     lon = Column(Float, nullable=True)
     estado = Column(String, default='libre')
     disponible = Column(Boolean, default=False)
+    # Nuevos campos
+    eps = Column(String, nullable=True)
+    arl = Column(String, nullable=True)
+    rh = Column(String, nullable=True)
+    contacto_emergencia = Column(String, nullable=True)
+    foto_perfil = Column(Text, nullable=True)
 
 class Solicitud(Base):
     __tablename__ = 'solicitudes'
@@ -78,23 +84,25 @@ class Maquina(Base):
     lat = Column(Float, nullable=True)
     lon = Column(Float, nullable=True)
 
-# Recrear tablas (esto puede borrar datos existentes, pero para desarrollo está bien)
-Base.metadata.drop_all(bind=engine)   # ❗OPCIONAL: elimina tablas anteriores (cuidado con datos)
+# Recrear tablas (esto borrará datos antiguos; ejecuta después el endpoint de inserción)
+Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)
 
-# ----- Crear usuarios de prueba (si no existen) -----
+# ----- Crear usuarios de prueba con datos extendidos -----
 db = SessionLocal()
 usuarios = [
-    {"email": "cliente@test.com", "password": "1234", "rol": "cliente", "nombre": "Cliente Demo"},
-    {"email": "tecnico1@test.com", "password": "1234", "rol": "tecnico", "nombre": "Tecnico Juan"},
-    {"email": "tecnico2@test.com", "password": "1234", "rol": "tecnico", "nombre": "Tecnico Maria"},
-    {"email": "coordinador@test.com", "password": "1234", "rol": "coordinador", "nombre": "Coord Ana"},
-    {"email": "lider@test.com", "password": "1234", "rol": "lider", "nombre": "Lider Carlos"},
+    {"email": "cliente@test.com", "password": "1234", "rol": "cliente", "nombre": "Cliente Demo", "eps": None, "arl": None, "rh": None, "contacto_emergencia": None, "foto_perfil": None},
+    {"email": "tecnico1@test.com", "password": "1234", "rol": "tecnico", "nombre": "Tecnico Juan", "eps": "Nueva EPS", "arl": "Positiva", "rh": "O+", "contacto_emergencia": "Maria Perez - 3111234567", "foto_perfil": ""},
+    {"email": "tecnico2@test.com", "password": "1234", "rol": "tecnico", "nombre": "Tecnico Maria", "eps": "Sanitas", "arl": "Sura", "rh": "A-", "contacto_emergencia": "Luis Rodriguez - 3109876543", "foto_perfil": ""},
+    {"email": "coordinador@test.com", "password": "1234", "rol": "coordinador", "nombre": "Coord Ana", "eps": None, "arl": None, "rh": None, "contacto_emergencia": None, "foto_perfil": None},
+    {"email": "lider@test.com", "password": "1234", "rol": "lider", "nombre": "Lider Carlos", "eps": None, "arl": None, "rh": None, "contacto_emergencia": None, "foto_perfil": None},
 ]
 for u in usuarios:
     if not db.query(User).filter(User.email == u["email"]).first():
         hashed = bcrypt.hashpw(u["password"].encode(), bcrypt.gensalt())
-        db.add(User(email=u["email"], password=hashed.decode(), rol=u["rol"], nombre=u["nombre"]))
+        db.add(User(email=u["email"], password=hashed.decode(), rol=u["rol"], nombre=u["nombre"],
+                    eps=u["eps"], arl=u["arl"], rh=u["rh"], contacto_emergencia=u["contacto_emergencia"],
+                    foto_perfil=u["foto_perfil"]))
 db.commit()
 db.close()
 
@@ -141,7 +149,17 @@ def get_usuario(user_id: int, user=Depends(get_current_user)):
     db.close()
     if not usuario:
         raise HTTPException(404, "Usuario no encontrado")
-    return {"id": usuario.id, "nombre": usuario.nombre, "email": usuario.email, "rol": usuario.rol}
+    return {
+        "id": usuario.id,
+        "nombre": usuario.nombre,
+        "email": usuario.email,
+        "rol": usuario.rol,
+        "eps": usuario.eps,
+        "arl": usuario.arl,
+        "rh": usuario.rh,
+        "contacto_emergencia": usuario.contacto_emergencia,
+        "foto_perfil": usuario.foto_perfil
+    }
 
 @app.post("/solicitudes/crear")
 def crear_solicitud(descripcion: str = Form(...), lat: float = Form(...), lon: float = Form(...), tipo: str = Form(...), fotos: str = Form(""), maquina_id: int = Form(None), user=Depends(get_current_user)):
@@ -356,12 +374,11 @@ def insertar_datos_prueba(user=Depends(get_current_user)):
     db.add_all([p1, p2, p3, p4, p5])
     db.commit()
     
-    # Configuración de validadores y dispensadores por parqueadero (corregida)
-    # Regla: Si validador es "Tarjeta", dispensador debe ser "Tarjeta".
+    # Configuración de validadores y dispensadores por parqueadero
     config = [
         {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},   # p1
         {"validador_tipo": "QR", "dispensador_tipo": "Papel"},           # p2
-        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},    # p3 (corregido: antes era Papel)
+        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},    # p3
         {"validador_tipo": "QR", "dispensador_tipo": "Tarjeta"},         # p4
         {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},    # p5
     ]
@@ -370,30 +387,22 @@ def insertar_datos_prueba(user=Depends(get_current_user)):
     for idx, p in enumerate([p1, p2, p3, p4, p5]):
         i = idx + 1
         cfg = config[idx]
-        
-        # 1. Validador
-        validador_nombre = f"Validador {cfg['validador_tipo']}"
-        maquinas.append(Maquina(codigo_qr=f"VAL_{i:03d}", nombre=validador_nombre, tipo="Validador", parqueadero_id=p.id))
-        
-        # 2. Dispensador
-        dispensador_nombre = f"Dispensador {cfg['dispensador_tipo']}"
-        maquinas.append(Maquina(codigo_qr=f"DISP_{i:03d}", nombre=dispensador_nombre, tipo="Dispensador", parqueadero_id=p.id))
-        
-        # 3. Barreras automáticas (entrada y salida)
+        # Validador
+        maquinas.append(Maquina(codigo_qr=f"VAL_{i:03d}", nombre=f"Validador {cfg['validador_tipo']}", tipo="Validador", parqueadero_id=p.id))
+        # Dispensador
+        maquinas.append(Maquina(codigo_qr=f"DISP_{i:03d}", nombre=f"Dispensador {cfg['dispensador_tipo']}", tipo="Dispensador", parqueadero_id=p.id))
+        # Barreras
         maquinas.append(Maquina(codigo_qr=f"BAR_ENT_{i:03d}", nombre=f"Barrera Entrada {i}", tipo="Barrera", parqueadero_id=p.id))
         maquinas.append(Maquina(codigo_qr=f"BAR_SAL_{i:03d}", nombre=f"Barrera Salida {i}", tipo="Barrera", parqueadero_id=p.id))
-        
-        # 4. Cámaras de inventario (2 laterales, 1 piso)
+        # Cámaras
         maquinas.append(Maquina(codigo_qr=f"CAM_LAT1_{i:03d}", nombre=f"Cámara Lateral 1", tipo="Camara", parqueadero_id=p.id))
         maquinas.append(Maquina(codigo_qr=f"CAM_LAT2_{i:03d}", nombre=f"Cámara Lateral 2", tipo="Camara", parqueadero_id=p.id))
         maquinas.append(Maquina(codigo_qr=f"CAM_PISO_{i:03d}", nombre=f"Cámara de Piso", tipo="Camara", parqueadero_id=p.id))
-        
-        # 5. LPR (entrada y salida)
+        # LPR
         maquinas.append(Maquina(codigo_qr=f"LPR_ENT_{i:03d}", nombre=f"LPR Entrada {i}", tipo="LPR", parqueadero_id=p.id))
         maquinas.append(Maquina(codigo_qr=f"LPR_SAL_{i:03d}", nombre=f"LPR Salida {i}", tipo="LPR", parqueadero_id=p.id))
-        
-        # 6. Cajero automático
-        maquinas.append(Maquina(codigo_qr=f"CAJ_{i:03d}", nombre=f"Cajero Automático {i}", tipo="Cajero", parqueadero_id=p.id))
+        # Cajero
+        maquinas.append(Maquina(codigo_qr=f"CAJ_{i:03d}", nombre=f"Cajero {i}", tipo="Cajero", parqueadero_id=p.id))
     
     db.add_all(maquinas)
     db.commit()
@@ -401,7 +410,7 @@ def insertar_datos_prueba(user=Depends(get_current_user)):
     num_parques = db.query(Parqueadero).count()
     num_maquinas = db.query(Maquina).count()
     db.close()
-    return {"mensaje": f"Insertados {num_parques} parqueaderos y {num_maquinas} máquinas"}
+    return {"mensaje": f"Insertados {num_parques} parqueaderos y {num_maquinas} maquinas"}
 
 # Para correr localmente
 if __name__ == "__main__":
