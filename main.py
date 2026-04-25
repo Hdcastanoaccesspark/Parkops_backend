@@ -38,6 +38,7 @@ class Solicitud(Base):
     tipo = Column(String)
     estado = Column(String)
     tecnico_id = Column(Integer, nullable=True)
+    maquina_id = Column(Integer, nullable=True)  # ✅ NUEVO: relación con máquina
     fecha_creacion = Column(DateTime, default=datetime.utcnow)
     fecha_asignacion = Column(DateTime, nullable=True)
     fecha_aceptacion = Column(DateTime, nullable=True)
@@ -77,6 +78,8 @@ class Maquina(Base):
     lat = Column(Float, nullable=True)
     lon = Column(Float, nullable=True)
 
+# Recrear tablas (esto puede borrar datos existentes, pero para desarrollo está bien)
+Base.metadata.drop_all(bind=engine)   # ❗OPCIONAL: elimina tablas anteriores (cuidado con datos)
 Base.metadata.create_all(bind=engine)
 
 # ----- Crear usuarios de prueba (si no existen) -----
@@ -129,8 +132,20 @@ def login(email: str = Form(...), password: str = Form(...)):
     token = jwt.encode({"user_id": user.id, "rol": user.rol, "exp": datetime.utcnow() + timedelta(hours=24)}, SECRET_KEY)
     return {"token": token, "rol": user.rol, "user_id": user.id}
 
+# ✅ NUEVO ENDPOINT: Obtener perfil de un usuario (para técnicos)
+@app.get("/usuarios/{user_id}")
+def get_usuario(user_id: int, user=Depends(get_current_user)):
+    if user.id != user_id and user.rol not in ['lider', 'coordinador']:
+        raise HTTPException(403, "No autorizado")
+    db = SessionLocal()
+    usuario = db.query(User).filter(User.id == user_id).first()
+    db.close()
+    if not usuario:
+        raise HTTPException(404, "Usuario no encontrado")
+    return {"id": usuario.id, "nombre": usuario.nombre, "email": usuario.email, "rol": usuario.rol}
+
 @app.post("/solicitudes/crear")
-def crear_solicitud(descripcion: str = Form(...), lat: float = Form(...), lon: float = Form(...), tipo: str = Form(...), fotos: str = Form(""), user=Depends(get_current_user)):
+def crear_solicitud(descripcion: str = Form(...), lat: float = Form(...), lon: float = Form(...), tipo: str = Form(...), fotos: str = Form(""), maquina_id: int = Form(None), user=Depends(get_current_user)):
     if user.rol != 'cliente':
         raise HTTPException(403, "Solo clientes")
     db = SessionLocal()
@@ -140,8 +155,16 @@ def crear_solicitud(descripcion: str = Form(...), lat: float = Form(...), lon: f
         raise HTTPException(404, "No hay técnicos disponibles")
     tecnico = min(tecnicos, key=lambda t: distancia(lat, lon, t.lat or 0, t.lon or 0))
     solicitud = Solicitud(
-        cliente_id=user.id, descripcion=descripcion, lat=lat, lon=lon, tipo=tipo, estado='asignada',
-        tecnico_id=tecnico.id, fecha_asignacion=datetime.utcnow(), fotos=fotos
+        cliente_id=user.id,
+        descripcion=descripcion,
+        lat=lat,
+        lon=lon,
+        tipo=tipo,
+        estado='asignada',
+        tecnico_id=tecnico.id,
+        maquina_id=maquina_id,
+        fecha_asignacion=datetime.utcnow(),
+        fotos=fotos
     )
     db.add(solicitud)
     db.commit()
@@ -158,7 +181,24 @@ def listar_solicitudes(user=Depends(get_current_user)):
     else:
         solicitudes = db.query(Solicitud).all()
     db.close()
-    return [{"id": s.id, "descripcion": s.descripcion, "estado": s.estado, "tipo": s.tipo} for s in solicitudes]
+    # Incluir nombre del cliente para mostrar en la lista del técnico (opcional)
+    result = []
+    for s in solicitudes:
+        cliente_nombre = None
+        if s.cliente_id:
+            db2 = SessionLocal()
+            cliente = db2.query(User).filter(User.id == s.cliente_id).first()
+            if cliente:
+                cliente_nombre = cliente.nombre
+            db2.close()
+        result.append({
+            "id": s.id,
+            "descripcion": s.descripcion,
+            "estado": s.estado,
+            "tipo": s.tipo,
+            "cliente_nombre": cliente_nombre
+        })
+    return result
 
 @app.post("/tecnico/iniciar_jornada")
 def iniciar_jornada(lat: float = Form(...), lon: float = Form(...), user=Depends(get_current_user)):
@@ -275,6 +315,30 @@ def jornada_activa(user=Depends(get_current_user)):
     activa = db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first()
     db.close()
     return {"activa": activa is not None}
+
+# ✅ NUEVO ENDPOINT: Obtener reportes de un parqueadero (para técnico)
+@app.get("/parqueaderos/{parqueadero_id}/reportes")
+def reportes_por_parqueadero(parqueadero_id: int, user=Depends(get_current_user)):
+    if user.rol != 'tecnico':
+        raise HTTPException(403, "No autorizado")
+    db = SessionLocal()
+    # Buscar todas las máquinas del parqueadero
+    maquinas = db.query(Maquina).filter(Maquina.parqueadero_id == parqueadero_id).all()
+    maquinas_ids = [m.id for m in maquinas]
+    # Solicitudes finalizadas asociadas a esas máquinas y realizadas por este técnico
+    reportes = db.query(Solicitud).filter(
+        Solicitud.tecnico_id == user.id,
+        Solicitud.estado == 'finalizada',
+        Solicitud.maquina_id.in_(maquinas_ids)
+    ).order_by(Solicitud.fecha_fin.desc()).all()
+    db.close()
+    return [{
+        "id": r.id,
+        "descripcion": r.descripcion,
+        "fecha": r.fecha_fin,
+        "tipo": r.tipo,
+        "maquina_nombre": next((m.nombre for m in maquinas if m.id == r.maquina_id), "")
+    } for r in reportes]
 
 # ----- Endpoint para insertar datos de prueba (solo líder/coordinador) -----
 @app.post("/admin/insertar_datos_prueba")
