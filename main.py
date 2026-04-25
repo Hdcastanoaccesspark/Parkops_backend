@@ -38,7 +38,7 @@ class Solicitud(Base):
     tipo = Column(String)
     estado = Column(String)
     tecnico_id = Column(Integer, nullable=True)
-    maquina_id = Column(Integer, nullable=True)  # ✅ NUEVO: relación con máquina
+    maquina_id = Column(Integer, nullable=True)
     fecha_creacion = Column(DateTime, default=datetime.utcnow)
     fecha_asignacion = Column(DateTime, nullable=True)
     fecha_aceptacion = Column(DateTime, nullable=True)
@@ -132,7 +132,6 @@ def login(email: str = Form(...), password: str = Form(...)):
     token = jwt.encode({"user_id": user.id, "rol": user.rol, "exp": datetime.utcnow() + timedelta(hours=24)}, SECRET_KEY)
     return {"token": token, "rol": user.rol, "user_id": user.id}
 
-# ✅ NUEVO ENDPOINT: Obtener perfil de un usuario (para técnicos)
 @app.get("/usuarios/{user_id}")
 def get_usuario(user_id: int, user=Depends(get_current_user)):
     if user.id != user_id and user.rol not in ['lider', 'coordinador']:
@@ -181,7 +180,6 @@ def listar_solicitudes(user=Depends(get_current_user)):
     else:
         solicitudes = db.query(Solicitud).all()
     db.close()
-    # Incluir nombre del cliente para mostrar en la lista del técnico (opcional)
     result = []
     for s in solicitudes:
         cliente_nombre = None
@@ -316,16 +314,13 @@ def jornada_activa(user=Depends(get_current_user)):
     db.close()
     return {"activa": activa is not None}
 
-# ✅ NUEVO ENDPOINT: Obtener reportes de un parqueadero (para técnico)
 @app.get("/parqueaderos/{parqueadero_id}/reportes")
 def reportes_por_parqueadero(parqueadero_id: int, user=Depends(get_current_user)):
     if user.rol != 'tecnico':
         raise HTTPException(403, "No autorizado")
     db = SessionLocal()
-    # Buscar todas las máquinas del parqueadero
     maquinas = db.query(Maquina).filter(Maquina.parqueadero_id == parqueadero_id).all()
     maquinas_ids = [m.id for m in maquinas]
-    # Solicitudes finalizadas asociadas a esas máquinas y realizadas por este técnico
     reportes = db.query(Solicitud).filter(
         Solicitud.tecnico_id == user.id,
         Solicitud.estado == 'finalizada',
@@ -361,17 +356,45 @@ def insertar_datos_prueba(user=Depends(get_current_user)):
     db.add_all([p1, p2, p3, p4, p5])
     db.commit()
     
-    # Máquinas
+    # Configuración de validadores y dispensadores por parqueadero (corregida)
+    # Regla: Si validador es "Tarjeta", dispensador debe ser "Tarjeta".
+    config = [
+        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},   # p1
+        {"validador_tipo": "QR", "dispensador_tipo": "Papel"},           # p2
+        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},    # p3 (corregido: antes era Papel)
+        {"validador_tipo": "QR", "dispensador_tipo": "Tarjeta"},         # p4
+        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},    # p5
+    ]
+    
     maquinas = []
-    for i, p in enumerate([p1, p2, p3, p4, p5], start=1):
-        maquinas.extend([
-            Maquina(codigo_qr=f"LPR_ENT_{i:03d}", nombre=f"LPR Entrada {i}", tipo="Camara", parqueadero_id=p.id),
-            Maquina(codigo_qr=f"LPR_SAL_{i:03d}", nombre=f"LPR Salida {i}", tipo="Camara", parqueadero_id=p.id),
-            Maquina(codigo_qr=f"BAR_AUT_{i:03d}", nombre=f"Barrera Automática {i}", tipo="Barrera", parqueadero_id=p.id),
-            Maquina(codigo_qr=f"CAJ_{i:03d}", nombre=f"Cajero {i}", tipo="Cajero", parqueadero_id=p.id),
-            Maquina(codigo_qr=f"CAM_PISO_{i:03d}", nombre=f"Cámara de Piso {i}", tipo="Camara", parqueadero_id=p.id),
-            Maquina(codigo_qr=f"CAM_LAT_{i:03d}", nombre=f"Cámara Lateral {i}", tipo="Camara", parqueadero_id=p.id),
-        ])
+    for idx, p in enumerate([p1, p2, p3, p4, p5]):
+        i = idx + 1
+        cfg = config[idx]
+        
+        # 1. Validador
+        validador_nombre = f"Validador {cfg['validador_tipo']}"
+        maquinas.append(Maquina(codigo_qr=f"VAL_{i:03d}", nombre=validador_nombre, tipo="Validador", parqueadero_id=p.id))
+        
+        # 2. Dispensador
+        dispensador_nombre = f"Dispensador {cfg['dispensador_tipo']}"
+        maquinas.append(Maquina(codigo_qr=f"DISP_{i:03d}", nombre=dispensador_nombre, tipo="Dispensador", parqueadero_id=p.id))
+        
+        # 3. Barreras automáticas (entrada y salida)
+        maquinas.append(Maquina(codigo_qr=f"BAR_ENT_{i:03d}", nombre=f"Barrera Entrada {i}", tipo="Barrera", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"BAR_SAL_{i:03d}", nombre=f"Barrera Salida {i}", tipo="Barrera", parqueadero_id=p.id))
+        
+        # 4. Cámaras de inventario (2 laterales, 1 piso)
+        maquinas.append(Maquina(codigo_qr=f"CAM_LAT1_{i:03d}", nombre=f"Cámara Lateral 1", tipo="Camara", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"CAM_LAT2_{i:03d}", nombre=f"Cámara Lateral 2", tipo="Camara", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"CAM_PISO_{i:03d}", nombre=f"Cámara de Piso", tipo="Camara", parqueadero_id=p.id))
+        
+        # 5. LPR (entrada y salida)
+        maquinas.append(Maquina(codigo_qr=f"LPR_ENT_{i:03d}", nombre=f"LPR Entrada {i}", tipo="LPR", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"LPR_SAL_{i:03d}", nombre=f"LPR Salida {i}", tipo="LPR", parqueadero_id=p.id))
+        
+        # 6. Cajero automático
+        maquinas.append(Maquina(codigo_qr=f"CAJ_{i:03d}", nombre=f"Cajero Automático {i}", tipo="Cajero", parqueadero_id=p.id))
+    
     db.add_all(maquinas)
     db.commit()
     
