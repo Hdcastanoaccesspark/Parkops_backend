@@ -83,7 +83,6 @@ class Maquina(Base):
     lat = Column(Float, nullable=True)
     lon = Column(Float, nullable=True)
 
-# Crear tablas (borra datos anteriores si existen)
 Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)
 
@@ -109,13 +108,49 @@ def crear_usuario(db, email, password, rol, nombre, eps=None, arl=None, rh=None,
     db.commit()
     return user
 
-# ----- Crear usuarios de prueba (FORZADO) -----
+# ----- Crear usuarios de prueba -----
 db = SessionLocal()
 crear_usuario(db, "cliente@test.com", "1234", "cliente", "Cliente Demo")
 crear_usuario(db, "tecnico1@test.com", "1234", "tecnico", "Tecnico Juan", "Nueva EPS", "Positiva", "O+", "Maria Perez - 3111234567", "")
 crear_usuario(db, "tecnico2@test.com", "1234", "tecnico", "Tecnico Maria", "Sanitas", "Sura", "A-", "Luis Rodriguez - 3109876543", "")
 crear_usuario(db, "coordinador@test.com", "1234", "coordinador", "Coord Ana")
 crear_usuario(db, "lider@test.com", "1234", "lider", "Lider Carlos")
+db.close()
+
+# ----- Crear parqueaderos y máquinas automáticamente (sin necesidad de endpoint) -----
+db = SessionLocal()
+if db.query(Parqueadero).count() == 0:
+    p1 = Parqueadero(nombre="Parqueadero Centro", direccion="Calle 19 # 5-30", lat=4.598, lon=-74.071, ciudad="Bogotá")
+    p2 = Parqueadero(nombre="Centro Comercial Unicentro", direccion="Cra 68 # 90-12", lat=4.676, lon=-74.077, ciudad="Bogotá")
+    p3 = Parqueadero(nombre="Parqueadero El Dorado", direccion="Av. El Dorado", lat=4.701, lon=-74.146, ciudad="Bogotá")
+    p4 = Parqueadero(nombre="Parqueadero Chapinero", direccion="Calle 45 # 15-80", lat=4.641, lon=-74.065, ciudad="Bogotá")
+    p5 = Parqueadero(nombre="Parqueadero Salitre", direccion="Calle 24 # 60-10", lat=4.653, lon=-74.104, ciudad="Bogotá")
+    db.add_all([p1, p2, p3, p4, p5])
+    db.commit()
+    
+    config = [
+        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
+        {"validador_tipo": "QR", "dispensador_tipo": "Papel"},
+        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
+        {"validador_tipo": "QR", "dispensador_tipo": "Tarjeta"},
+        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
+    ]
+    maquinas = []
+    for idx, p in enumerate([p1, p2, p3, p4, p5]):
+        i = idx + 1
+        cfg = config[idx]
+        maquinas.append(Maquina(codigo_qr=f"VAL_{i:03d}", nombre=f"Validador {cfg['validador_tipo']}", tipo="Validador", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"DISP_{i:03d}", nombre=f"Dispensador {cfg['dispensador_tipo']}", tipo="Dispensador", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"BAR_ENT_{i:03d}", nombre=f"Barrera Entrada {i}", tipo="Barrera", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"BAR_SAL_{i:03d}", nombre=f"Barrera Salida {i}", tipo="Barrera", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"CAM_LAT1_{i:03d}", nombre=f"Cámara Lateral 1", tipo="Camara", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"CAM_LAT2_{i:03d}", nombre=f"Cámara Lateral 2", tipo="Camara", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"CAM_PISO_{i:03d}", nombre=f"Cámara de Piso", tipo="Camara", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"LPR_ENT_{i:03d}", nombre=f"LPR Entrada {i}", tipo="LPR", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"LPR_SAL_{i:03d}", nombre=f"LPR Salida {i}", tipo="LPR", parqueadero_id=p.id))
+        maquinas.append(Maquina(codigo_qr=f"CAJ_{i:03d}", nombre=f"Cajero {i}", tipo="Cajero", parqueadero_id=p.id))
+    db.add_all(maquinas)
+    db.commit()
 db.close()
 
 # ----- FastAPI app -----
@@ -142,7 +177,6 @@ def distancia(lat1, lon1, lat2, lon2):
 def root():
     return {"mensaje": "ParkOps API funcionando"}
 
-# ----- Autenticación -----
 @app.post("/auth/register")
 def register(email: str = Form(...), password: str = Form(...), rol: str = Form(...), nombre: str = Form(...)):
     db = SessionLocal()
@@ -186,7 +220,6 @@ def get_usuario(user_id: int, user=Depends(get_current_user)):
         "foto_perfil": usuario.foto_perfil
     }
 
-# ----- Solicitudes -----
 @app.post("/solicitudes/crear")
 def crear_solicitud(descripcion: str = Form(...), lat: float = Form(...), lon: float = Form(...), tipo: str = Form(...), fotos: str = Form(""), maquina_id: int = Form(None), user=Depends(get_current_user)):
     if user.rol != 'cliente':
@@ -325,7 +358,6 @@ def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = For
     db.close()
     return {"mensaje": "Servicio finalizado"}
 
-# ----- Endpoints para parqueaderos y máquinas -----
 @app.get("/parqueaderos")
 def listar_parqueaderos(user=Depends(get_current_user)):
     db = SessionLocal()
@@ -379,54 +411,6 @@ def reportes_por_parqueadero(parqueadero_id: int, user=Depends(get_current_user)
         "maquina_nombre": next((m.nombre for m in maquinas if m.id == r.maquina_id), "")
     } for r in reportes]
 
-# ----- Endpoint para insertar datos de prueba (parqueaderos y máquinas) -----
-@app.post("/admin/insertar_datos_prueba")
-def insertar_datos_prueba(user=Depends(get_current_user)):
-    if user.rol not in ["lider", "coordinador"]:
-        raise HTTPException(403, "No autorizado")
-    db = SessionLocal()
-    db.query(Maquina).delete()
-    db.query(Parqueadero).delete()
-    db.commit()
-    
-    # Crear parqueaderos
-    p1 = Parqueadero(nombre="Parqueadero Centro", direccion="Calle 19 # 5-30", lat=4.598, lon=-74.071, ciudad="Bogotá")
-    p2 = Parqueadero(nombre="Centro Comercial Unicentro", direccion="Cra 68 # 90-12", lat=4.676, lon=-74.077, ciudad="Bogotá")
-    p3 = Parqueadero(nombre="Parqueadero El Dorado", direccion="Av. El Dorado", lat=4.701, lon=-74.146, ciudad="Bogotá")
-    p4 = Parqueadero(nombre="Parqueadero Chapinero", direccion="Calle 45 # 15-80", lat=4.641, lon=-74.065, ciudad="Bogotá")
-    p5 = Parqueadero(nombre="Parqueadero Salitre", direccion="Calle 24 # 60-10", lat=4.653, lon=-74.104, ciudad="Bogotá")
-    db.add_all([p1, p2, p3, p4, p5])
-    db.commit()
-    
-    config = [
-        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
-        {"validador_tipo": "QR", "dispensador_tipo": "Papel"},
-        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
-        {"validador_tipo": "QR", "dispensador_tipo": "Tarjeta"},
-        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
-    ]
-    maquinas = []
-    for idx, p in enumerate([p1, p2, p3, p4, p5]):
-        i = idx + 1
-        cfg = config[idx]
-        maquinas.append(Maquina(codigo_qr=f"VAL_{i:03d}", nombre=f"Validador {cfg['validador_tipo']}", tipo="Validador", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"DISP_{i:03d}", nombre=f"Dispensador {cfg['dispensador_tipo']}", tipo="Dispensador", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"BAR_ENT_{i:03d}", nombre=f"Barrera Entrada {i}", tipo="Barrera", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"BAR_SAL_{i:03d}", nombre=f"Barrera Salida {i}", tipo="Barrera", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"CAM_LAT1_{i:03d}", nombre=f"Cámara Lateral 1", tipo="Camara", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"CAM_LAT2_{i:03d}", nombre=f"Cámara Lateral 2", tipo="Camara", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"CAM_PISO_{i:03d}", nombre=f"Cámara de Piso", tipo="Camara", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"LPR_ENT_{i:03d}", nombre=f"LPR Entrada {i}", tipo="LPR", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"LPR_SAL_{i:03d}", nombre=f"LPR Salida {i}", tipo="LPR", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"CAJ_{i:03d}", nombre=f"Cajero {i}", tipo="Cajero", parqueadero_id=p.id))
-    db.add_all(maquinas)
-    db.commit()
-    num_parques = db.query(Parqueadero).count()
-    num_maquinas = db.query(Maquina).count()
-    db.close()
-    return {"mensaje": f"Insertados {num_parques} parqueaderos y {num_maquinas} máquinas"}
-
-# Para correr localmente
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=10000)
