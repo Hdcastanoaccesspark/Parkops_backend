@@ -47,7 +47,7 @@ class Solicitud(Base):
     estado = Column(String)
     tecnico_id = Column(Integer, nullable=True)
     maquina_id = Column(Integer, nullable=True)
-    solicitud_original_id = Column(Integer, nullable=True)   # NUEVO
+    solicitud_original_id = Column(Integer, nullable=True)
     fecha_creacion = Column(DateTime, default=datetime.utcnow)
     fecha_asignacion = Column(DateTime, nullable=True)
     fecha_aceptacion = Column(DateTime, nullable=True)
@@ -115,7 +115,29 @@ def seed_database():
             p5 = Parqueadero(nombre="Parqueadero Salitre", direccion="Calle 24 # 60-10", lat=4.653, lon=-74.104, ciudad="Bogotá")
             db.add_all([p1, p2, p3, p4, p5])
             db.commit()
-            # ... (máquinas igual que antes, copia el bloque completo de máquinas del main.py anterior)
+            config = [
+                {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
+                {"validador_tipo": "QR", "dispensador_tipo": "Papel"},
+                {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
+                {"validador_tipo": "QR", "dispensador_tipo": "Tarjeta"},
+                {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
+            ]
+            maquinas = []
+            for idx, p in enumerate([p1, p2, p3, p4, p5]):
+                i = idx + 1
+                cfg = config[idx]
+                maquinas.append(Maquina(codigo_qr=f"VAL_{i:03d}", nombre=f"Validador {cfg['validador_tipo']}", tipo="Validador", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"DISP_{i:03d}", nombre=f"Dispensador {cfg['dispensador_tipo']}", tipo="Dispensador", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"BAR_ENT_{i:03d}", nombre=f"Barrera Entrada {i}", tipo="Barrera", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"BAR_SAL_{i:03d}", nombre=f"Barrera Salida {i}", tipo="Barrera", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"CAM_LAT1_{i:03d}", nombre=f"Cámara Lateral 1", tipo="Camara", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"CAM_LAT2_{i:03d}", nombre=f"Cámara Lateral 2", tipo="Camara", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"CAM_PISO_{i:03d}", nombre=f"Cámara de Piso", tipo="Camara", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"LPR_ENT_{i:03d}", nombre=f"LPR Entrada {i}", tipo="LPR", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"LPR_SAL_{i:03d}", nombre=f"LPR Salida {i}", tipo="LPR", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"CAJ_{i:03d}", nombre=f"Cajero {i}", tipo="Cajero", parqueadero_id=p.id))
+            db.add_all(maquinas)
+            db.commit()
     except Exception as e:
         print(f"Error seeding database: {e}")
         db.rollback()
@@ -182,7 +204,7 @@ def crear_solicitud(
     fotos: str = Form(""),
     videos: str = Form(""),
     maquina_id: str = Form(None),
-    solicitud_original_id: str = Form(None),   # NUEVO
+    solicitud_original_id: str = Form(None),
     user=Depends(get_current_user)
 ):
     try:
@@ -332,7 +354,6 @@ def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = For
         solicitud.estado = 'finalizada'; solicitud.items = items; solicitud.firma = firma
         solicitud.fecha_fin = datetime.utcnow(); user.estado = 'libre'
         db.commit()
-        # Generar PDF (incluye solicitud original si existe)
         try:
             pdf_path = generar_pdf(solicitud_id)
             cliente = db.query(User).filter(User.id == solicitud.cliente_id).first()
@@ -356,8 +377,6 @@ def generar_pdf(solicitud_id: int):
         raise HTTPException(404, "Solicitud no encontrada")
     cliente = db.query(User).filter(User.id == solicitud.cliente_id).first()
     tecnico = db.query(User).filter(User.id == solicitud.tecnico_id).first() if solicitud.tecnico_id else None
-
-    # Si existe solicitud original, agregamos su información
     desc_original = ""
     if solicitud.solicitud_original_id:
         original = db.query(Solicitud).filter(Solicitud.id == solicitud.solicitud_original_id).first()
@@ -391,8 +410,89 @@ def descargar_pdf(solicitud_id: int, user=Depends(get_current_user)):
     pdf_path = generar_pdf(solicitud_id)
     return FileResponse(pdf_path, media_type='application/pdf', filename=f'reporte_{solicitud_id}.pdf')
 
-# ... (resto de endpoints: parqueaderos, maquinas, tecnicos, asignar, cancelar, etc.) ...
-# COPIA TAL CUAL los endpoints restantes del main.py anterior, incluyendo los de admin y los GET de parqueaderos, etc.
+@app.get("/tecnicos")
+def listar_tecnicos(user=Depends(get_current_user)):
+    db = SessionLocal()
+    tecnicos = db.query(User).filter(User.rol == 'tecnico').all()
+    db.close()
+    return [{"id": t.id, "nombre": t.nombre, "disponible": t.disponible} for t in tecnicos]
+
+@app.put("/solicitudes/{solicitud_id}/asignar")
+def asignar_tecnico(solicitud_id: int, tecnico_id: int = Form(...), user=Depends(get_current_user)):
+    if user.rol not in ['coordinador', 'lider']:
+        raise HTTPException(403, "No autorizado")
+    db = SessionLocal()
+    solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id).first()
+    if not solicitud:
+        db.close(); raise HTTPException(404, "Solicitud no encontrada")
+    if solicitud.estado not in ['pendiente', 'asignada']:
+        db.close(); raise HTTPException(400, "La solicitud ya fue aceptada o finalizada")
+    tecnico = db.query(User).filter(User.id == tecnico_id, User.rol == 'tecnico').first()
+    if not tecnico:
+        db.close(); raise HTTPException(404, "Técnico no encontrado")
+    solicitud.tecnico_id = tecnico_id
+    solicitud.estado = 'asignada'
+    solicitud.fecha_asignacion = datetime.utcnow()
+    db.commit()
+    db.close()
+    return {"mensaje": f"Solicitud asignada a {tecnico.nombre}"}
+
+@app.delete("/solicitudes/{solicitud_id}")
+def cancelar_solicitud(solicitud_id: int, user=Depends(get_current_user)):
+    if user.rol not in ['coordinador', 'lider']:
+        raise HTTPException(403, "No autorizado")
+    db = SessionLocal()
+    solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id).first()
+    if not solicitud:
+        db.close(); raise HTTPException(404, "Solicitud no encontrada")
+    if solicitud.estado in ['finalizada', 'cancelada']:
+        db.close(); raise HTTPException(400, "No se puede cancelar una solicitud en estado final")
+    solicitud.estado = 'cancelada'
+    db.commit()
+    db.close()
+    return {"mensaje": "Solicitud cancelada"}
+
+@app.get("/parqueaderos")
+def listar_parqueaderos(user=Depends(get_current_user)):
+    try:
+        db = SessionLocal()
+        parques = db.query(Parqueadero).all()
+        db.close()
+        return [{"id": p.id, "nombre": p.nombre, "direccion": p.direccion, "lat": p.lat, "lon": p.lon, "ciudad": p.ciudad} for p in parques]
+    except Exception as e:
+        raise HTTPException(500, f"Error: {str(e)}")
+
+@app.get("/parqueaderos/{parqueadero_id}/maquinas")
+def listar_maquinas(parqueadero_id: int, user=Depends(get_current_user)):
+    try:
+        db = SessionLocal()
+        maquinas = db.query(Maquina).filter(Maquina.parqueadero_id == parqueadero_id).all()
+        db.close()
+        return [{"id": m.id, "nombre": m.nombre, "tipo": m.tipo, "codigo_qr": m.codigo_qr} for m in maquinas]
+    except Exception as e:
+        raise HTTPException(500, f"Error: {str(e)}")
+
+@app.get("/maquinas/qr/{codigo_qr}")
+def buscar_maquina_por_qr(codigo_qr: str, user=Depends(get_current_user)):
+    try:
+        db = SessionLocal()
+        maquina = db.query(Maquina).filter(Maquina.codigo_qr == codigo_qr).first()
+        db.close()
+        if not maquina: raise HTTPException(404, "Máquina no encontrada")
+        return {"id": maquina.id, "nombre": maquina.nombre, "tipo": maquina.tipo, "parqueadero_id": maquina.parqueadero_id}
+    except Exception as e:
+        raise HTTPException(500, f"Error: {str(e)}")
+
+@app.get("/tecnico/jornada_activa")
+def jornada_activa(user=Depends(get_current_user)):
+    try:
+        if user.rol != 'tecnico': raise HTTPException(403)
+        db = SessionLocal()
+        activa = db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first()
+        db.close()
+        return {"activa": activa is not None}
+    except Exception as e:
+        raise HTTPException(500, f"Error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
