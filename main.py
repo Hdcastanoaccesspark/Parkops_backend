@@ -53,7 +53,7 @@ class Solicitud(Base):
     fecha_inicio = Column(DateTime, nullable=True)
     fecha_fin = Column(DateTime, nullable=True)
     fotos = Column(Text, nullable=True)
-    videos = Column(Text, nullable=True)   # NUEVO
+    videos = Column(Text, nullable=True)
     items = Column(Text, nullable=True)
     firma = Column(Text, nullable=True)
 
@@ -194,7 +194,6 @@ def generar_pdf(solicitud_id: int):
     pdf.output(f"/tmp/solicitud_{solicitud_id}.pdf")
     return f"/tmp/solicitud_{solicitud_id}.pdf"
 
-# --- Manejador global de excepciones para no perder detalles ---
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
@@ -238,8 +237,8 @@ def crear_solicitud(
     lon: float = Form(...),
     tipo: str = Form(...),
     fotos: str = Form(""),
-    videos: str = Form(""),          # NUEVO
-    maquina_id: str = Form(None),    # Recibe como string, lo convertimos
+    videos: str = Form(""),
+    maquina_id: str = Form(None),
     user=Depends(get_current_user)
 ):
     try:
@@ -255,7 +254,6 @@ def crear_solicitud(
             tecnico = None
             estado = 'pendiente'
             fecha_asignacion = None
-        # Validar maquina_id (puede venir como string vacío o "None")
         maq_id = None
         if maquina_id and maquina_id.strip() and maquina_id != 'None':
             try:
@@ -384,6 +382,48 @@ def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = For
 def descargar_pdf(solicitud_id: int, user=Depends(get_current_user)):
     pdf_path = generar_pdf(solicitud_id)
     return FileResponse(pdf_path, media_type='application/pdf', filename=f'reporte_{solicitud_id}.pdf')
+
+@app.get("/tecnicos")
+def listar_tecnicos(user=Depends(get_current_user)):
+    db = SessionLocal()
+    tecnicos = db.query(User).filter(User.rol == 'tecnico').all()
+    db.close()
+    return [{"id": t.id, "nombre": t.nombre, "disponible": t.disponible} for t in tecnicos]
+
+@app.put("/solicitudes/{solicitud_id}/asignar")
+def asignar_tecnico(solicitud_id: int, tecnico_id: int = Form(...), user=Depends(get_current_user)):
+    if user.rol not in ['coordinador', 'lider']:
+        raise HTTPException(403, "No autorizado")
+    db = SessionLocal()
+    solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id).first()
+    if not solicitud:
+        db.close(); raise HTTPException(404, "Solicitud no encontrada")
+    if solicitud.estado not in ['pendiente', 'asignada']:
+        db.close(); raise HTTPException(400, "La solicitud ya fue aceptada o finalizada")
+    tecnico = db.query(User).filter(User.id == tecnico_id, User.rol == 'tecnico').first()
+    if not tecnico:
+        db.close(); raise HTTPException(404, "Técnico no encontrado")
+    solicitud.tecnico_id = tecnico_id
+    solicitud.estado = 'asignada'
+    solicitud.fecha_asignacion = datetime.utcnow()
+    db.commit()
+    db.close()
+    return {"mensaje": f"Solicitud asignada a {tecnico.nombre}"}
+
+@app.delete("/solicitudes/{solicitud_id}")
+def cancelar_solicitud(solicitud_id: int, user=Depends(get_current_user)):
+    if user.rol not in ['coordinador', 'lider']:
+        raise HTTPException(403, "No autorizado")
+    db = SessionLocal()
+    solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id).first()
+    if not solicitud:
+        db.close(); raise HTTPException(404, "Solicitud no encontrada")
+    if solicitud.estado in ['finalizada', 'cancelada']:
+        db.close(); raise HTTPException(400, "No se puede cancelar una solicitud en estado final")
+    solicitud.estado = 'cancelada'
+    db.commit()
+    db.close()
+    return {"mensaje": "Solicitud cancelada"}
 
 @app.get("/parqueaderos")
 def listar_parqueaderos(user=Depends(get_current_user)):
