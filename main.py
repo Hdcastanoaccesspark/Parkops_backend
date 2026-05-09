@@ -1,7 +1,7 @@
-from fastapi import FastAPI, HTTPException, Depends, Form
+from fastapi import FastAPI, HTTPException, Depends, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -10,6 +10,7 @@ import bcrypt
 import jwt
 import math
 import os
+import traceback
 from fpdf import FPDF
 
 # ----- Base de datos -----
@@ -52,6 +53,7 @@ class Solicitud(Base):
     fecha_inicio = Column(DateTime, nullable=True)
     fecha_fin = Column(DateTime, nullable=True)
     fotos = Column(Text, nullable=True)
+    videos = Column(Text, nullable=True)   # NUEVO
     items = Column(Text, nullable=True)
     firma = Column(Text, nullable=True)
 
@@ -192,6 +194,14 @@ def generar_pdf(solicitud_id: int):
     pdf.output(f"/tmp/solicitud_{solicitud_id}.pdf")
     return f"/tmp/solicitud_{solicitud_id}.pdf"
 
+# --- Manejador global de excepciones para no perder detalles ---
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal Server Error: {str(exc)}"}
+    )
+
 @app.get("/")
 def root():
     return {"mensaje": "ParkOps API funcionando"}
@@ -222,109 +232,153 @@ def get_usuario(user_id: int, user=Depends(get_current_user)):
     }
 
 @app.post("/solicitudes/crear")
-def crear_solicitud(descripcion: str = Form(...), lat: float = Form(...), lon: float = Form(...), tipo: str = Form(...), fotos: str = Form(""), maquina_id: int = Form(None), user=Depends(get_current_user)):
-    if user.rol not in ['cliente', 'tecnico']:
-        raise HTTPException(403, "No autorizado")
-    db = SessionLocal()
-    tecnicos = db.query(User).filter(User.rol == 'tecnico', User.disponible == True).all()
-    if tecnicos:
-        tecnico = min(tecnicos, key=lambda t: distancia(lat, lon, t.lat or 0, t.lon or 0))
-        estado = 'asignada'
-        fecha_asignacion = datetime.utcnow()
-    else:
-        tecnico = None
-        estado = 'pendiente'
-        fecha_asignacion = None
-    solicitud = Solicitud(
-        cliente_id=user.id, descripcion=descripcion, lat=lat, lon=lon, tipo=tipo,
-        estado=estado, tecnico_id=tecnico.id if tecnico else None,
-        maquina_id=maquina_id, fecha_asignacion=fecha_asignacion, fotos=fotos
-    )
-    db.add(solicitud)
-    db.commit()
-    db.close()
-    return {"mensaje": "Solicitud creada", "tecnico": tecnico.nombre if tecnico else "Pendiente de asignación", "solicitud_id": solicitud.id}
+def crear_solicitud(
+    descripcion: str = Form(...),
+    lat: float = Form(...),
+    lon: float = Form(...),
+    tipo: str = Form(...),
+    fotos: str = Form(""),
+    videos: str = Form(""),          # NUEVO
+    maquina_id: str = Form(None),    # Recibe como string, lo convertimos
+    user=Depends(get_current_user)
+):
+    try:
+        if user.rol not in ['cliente', 'tecnico']:
+            raise HTTPException(403, "No autorizado")
+        db = SessionLocal()
+        tecnicos = db.query(User).filter(User.rol == 'tecnico', User.disponible == True).all()
+        if tecnicos:
+            tecnico = min(tecnicos, key=lambda t: distancia(lat, lon, t.lat or 0, t.lon or 0))
+            estado = 'asignada'
+            fecha_asignacion = datetime.utcnow()
+        else:
+            tecnico = None
+            estado = 'pendiente'
+            fecha_asignacion = None
+        # Validar maquina_id (puede venir como string vacío o "None")
+        maq_id = None
+        if maquina_id and maquina_id.strip() and maquina_id != 'None':
+            try:
+                maq_id = int(maquina_id)
+            except:
+                pass
+        solicitud = Solicitud(
+            cliente_id=user.id, descripcion=descripcion, lat=lat, lon=lon, tipo=tipo,
+            estado=estado, tecnico_id=tecnico.id if tecnico else None,
+            maquina_id=maq_id, fecha_asignacion=fecha_asignacion,
+            fotos=fotos, videos=videos
+        )
+        db.add(solicitud)
+        db.commit()
+        db.close()
+        return {"mensaje": "Solicitud creada", "tecnico": tecnico.nombre if tecnico else "Pendiente de asignación", "solicitud_id": solicitud.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error al crear solicitud: {str(e)}")
 
 @app.get("/api/solicitudes")
 def listar_solicitudes(user=Depends(get_current_user)):
-    db = SessionLocal()
-    if user.rol == 'cliente':
-        solicitudes = db.query(Solicitud).filter(Solicitud.cliente_id == user.id).all()
-    elif user.rol == 'tecnico':
-        solicitudes = db.query(Solicitud).filter(Solicitud.tecnico_id == user.id).all()
-    else:
-        solicitudes = db.query(Solicitud).all()
-    db.close()
-    result = []
-    for s in solicitudes:
-        cliente_nombre = None
-        if s.cliente_id:
-            db2 = SessionLocal()
-            cliente = db2.query(User).filter(User.id == s.cliente_id).first()
-            if cliente: cliente_nombre = cliente.nombre
-            db2.close()
-        result.append({"id": s.id, "descripcion": s.descripcion, "estado": s.estado, "tipo": s.tipo, "cliente_nombre": cliente_nombre})
-    return result
+    try:
+        db = SessionLocal()
+        if user.rol == 'cliente':
+            solicitudes = db.query(Solicitud).filter(Solicitud.cliente_id == user.id).all()
+        elif user.rol == 'tecnico':
+            solicitudes = db.query(Solicitud).filter(Solicitud.tecnico_id == user.id).all()
+        else:
+            solicitudes = db.query(Solicitud).all()
+        db.close()
+        result = []
+        for s in solicitudes:
+            cliente_nombre = None
+            if s.cliente_id:
+                db2 = SessionLocal()
+                cliente = db2.query(User).filter(User.id == s.cliente_id).first()
+                if cliente: cliente_nombre = cliente.nombre
+                db2.close()
+            result.append({"id": s.id, "descripcion": s.descripcion, "estado": s.estado, "tipo": s.tipo, "cliente_nombre": cliente_nombre})
+        return result
+    except Exception as e:
+        raise HTTPException(500, f"Error al listar solicitudes: {str(e)}")
 
 @app.post("/tecnico/iniciar_jornada")
 def iniciar_jornada(lat: float = Form(...), lon: float = Form(...), user=Depends(get_current_user)):
-    if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
-    db = SessionLocal()
-    if db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first():
-        db.close(); raise HTTPException(400, "Ya hay jornada activa")
-    nueva = Jornada(tecnico_id=user.id, inicio=datetime.utcnow(), lat_inicio=lat, lon_inicio=lon)
-    user.disponible = True; user.lat, user.lon = lat, lon
-    db.add(nueva); db.commit(); db.close()
-    return {"mensaje": "Jornada iniciada"}
+    try:
+        if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
+        db = SessionLocal()
+        if db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first():
+            db.close(); raise HTTPException(400, "Ya hay jornada activa")
+        nueva = Jornada(tecnico_id=user.id, inicio=datetime.utcnow(), lat_inicio=lat, lon_inicio=lon)
+        user.disponible = True; user.lat, user.lon = lat, lon
+        db.add(nueva); db.commit(); db.close()
+        return {"mensaje": "Jornada iniciada"}
+    except Exception as e:
+        raise HTTPException(500, f"Error al iniciar jornada: {str(e)}")
 
 @app.post("/tecnico/finalizar_jornada")
 def finalizar_jornada(lat: float = Form(...), lon: float = Form(...), user=Depends(get_current_user)):
-    if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
-    db = SessionLocal()
-    jornada = db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first()
-    if not jornada: db.close(); raise HTTPException(404, "No hay jornada activa")
-    jornada.fin = datetime.utcnow(); jornada.lat_fin, jornada.lon_fin = lat, lon
-    user.disponible = False; db.commit(); db.close()
-    return {"mensaje": "Jornada finalizada"}
+    try:
+        if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
+        db = SessionLocal()
+        jornada = db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first()
+        if not jornada: db.close(); raise HTTPException(404, "No hay jornada activa")
+        jornada.fin = datetime.utcnow(); jornada.lat_fin, jornada.lon_fin = lat, lon
+        user.disponible = False; db.commit(); db.close()
+        return {"mensaje": "Jornada finalizada"}
+    except Exception as e:
+        raise HTTPException(500, f"Error al finalizar jornada: {str(e)}")
 
 @app.post("/tecnico/aceptar/{solicitud_id}")
 def aceptar_solicitud(solicitud_id: int, user=Depends(get_current_user)):
-    if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
-    db = SessionLocal()
-    solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id, Solicitud.tecnico_id == user.id).first()
-    if not solicitud or solicitud.estado not in ['asignada', 'pendiente']: db.close(); raise HTTPException(404, "Solicitud no válida")
-    solicitud.estado = 'aceptada'; solicitud.tecnico_id = user.id; solicitud.fecha_aceptacion = datetime.utcnow()
-    user.estado = 'ocupado'; db.commit(); db.close()
-    return {"mensaje": "Solicitud aceptada"}
+    try:
+        if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
+        db = SessionLocal()
+        solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id, Solicitud.tecnico_id == user.id).first()
+        if not solicitud or solicitud.estado not in ['asignada', 'pendiente']:
+            db.close(); raise HTTPException(404, "Solicitud no válida")
+        solicitud.estado = 'aceptada'; solicitud.tecnico_id = user.id
+        solicitud.fecha_aceptacion = datetime.utcnow()
+        user.estado = 'ocupado'; db.commit(); db.close()
+        return {"mensaje": "Solicitud aceptada"}
+    except Exception as e:
+        raise HTTPException(500, f"Error al aceptar: {str(e)}")
 
 @app.post("/tecnico/iniciar_servicio/{solicitud_id}")
 def iniciar_servicio(solicitud_id: int, lat: float = Form(...), lon: float = Form(...), user=Depends(get_current_user)):
-    if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
-    db = SessionLocal()
-    solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id, Solicitud.tecnico_id == user.id).first()
-    if not solicitud or solicitud.estado != 'aceptada': db.close(); raise HTTPException(404, "Solicitud no aceptada")
-    solicitud.estado = 'en_proceso'; solicitud.fecha_inicio = datetime.utcnow()
-    user.estado = 'en_servicio'; db.commit(); db.close()
-    return {"mensaje": "Servicio iniciado"}
+    try:
+        if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
+        db = SessionLocal()
+        solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id, Solicitud.tecnico_id == user.id).first()
+        if not solicitud or solicitud.estado != 'aceptada':
+            db.close(); raise HTTPException(404, "Solicitud no aceptada")
+        solicitud.estado = 'en_proceso'; solicitud.fecha_inicio = datetime.utcnow()
+        user.estado = 'en_servicio'; db.commit(); db.close()
+        return {"mensaje": "Servicio iniciado"}
+    except Exception as e:
+        raise HTTPException(500, f"Error al iniciar servicio: {str(e)}")
 
 @app.post("/tecnico/cerrar_solicitud/{solicitud_id}")
 def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = Form(...), user=Depends(get_current_user)):
-    if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
-    db = SessionLocal()
-    solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id, Solicitud.tecnico_id == user.id).first()
-    if not solicitud or solicitud.estado != 'en_proceso': db.close(); raise HTTPException(404, "Solicitud no en proceso")
-    solicitud.estado = 'finalizada'; solicitud.items = items; solicitud.firma = firma
-    solicitud.fecha_fin = datetime.utcnow(); user.estado = 'libre'
-    db.commit()
     try:
-        pdf_path = generar_pdf(solicitud_id)
-        cliente = db.query(User).filter(User.id == solicitud.cliente_id).first()
-        if cliente:
-            print(f"📧 PDF generado para {cliente.email}")
-    except:
-        pass
-    db.close()
-    return {"mensaje": "Servicio finalizado, PDF generado"}
+        if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
+        db = SessionLocal()
+        solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id, Solicitud.tecnico_id == user.id).first()
+        if not solicitud or solicitud.estado != 'en_proceso':
+            db.close(); raise HTTPException(404, "Solicitud no en proceso")
+        solicitud.estado = 'finalizada'; solicitud.items = items; solicitud.firma = firma
+        solicitud.fecha_fin = datetime.utcnow(); user.estado = 'libre'
+        db.commit()
+        try:
+            pdf_path = generar_pdf(solicitud_id)
+            cliente = db.query(User).filter(User.id == solicitud.cliente_id).first()
+            if cliente:
+                print(f"📧 PDF generado para {cliente.email}")
+        except:
+            pass
+        db.close()
+        return {"mensaje": "Servicio finalizado, PDF generado"}
+    except Exception as e:
+        raise HTTPException(500, f"Error al cerrar solicitud: {str(e)}")
 
 @app.get("/reporte/{solicitud_id}/pdf")
 def descargar_pdf(solicitud_id: int, user=Depends(get_current_user)):
@@ -333,33 +387,45 @@ def descargar_pdf(solicitud_id: int, user=Depends(get_current_user)):
 
 @app.get("/parqueaderos")
 def listar_parqueaderos(user=Depends(get_current_user)):
-    db = SessionLocal()
-    parques = db.query(Parqueadero).all()
-    db.close()
-    return [{"id": p.id, "nombre": p.nombre, "direccion": p.direccion, "lat": p.lat, "lon": p.lon, "ciudad": p.ciudad} for p in parques]
+    try:
+        db = SessionLocal()
+        parques = db.query(Parqueadero).all()
+        db.close()
+        return [{"id": p.id, "nombre": p.nombre, "direccion": p.direccion, "lat": p.lat, "lon": p.lon, "ciudad": p.ciudad} for p in parques]
+    except Exception as e:
+        raise HTTPException(500, f"Error: {str(e)}")
 
 @app.get("/parqueaderos/{parqueadero_id}/maquinas")
 def listar_maquinas(parqueadero_id: int, user=Depends(get_current_user)):
-    db = SessionLocal()
-    maquinas = db.query(Maquina).filter(Maquina.parqueadero_id == parqueadero_id).all()
-    db.close()
-    return [{"id": m.id, "nombre": m.nombre, "tipo": m.tipo, "codigo_qr": m.codigo_qr} for m in maquinas]
+    try:
+        db = SessionLocal()
+        maquinas = db.query(Maquina).filter(Maquina.parqueadero_id == parqueadero_id).all()
+        db.close()
+        return [{"id": m.id, "nombre": m.nombre, "tipo": m.tipo, "codigo_qr": m.codigo_qr} for m in maquinas]
+    except Exception as e:
+        raise HTTPException(500, f"Error: {str(e)}")
 
 @app.get("/maquinas/qr/{codigo_qr}")
 def buscar_maquina_por_qr(codigo_qr: str, user=Depends(get_current_user)):
-    db = SessionLocal()
-    maquina = db.query(Maquina).filter(Maquina.codigo_qr == codigo_qr).first()
-    db.close()
-    if not maquina: raise HTTPException(404, "Máquina no encontrada")
-    return {"id": maquina.id, "nombre": maquina.nombre, "tipo": maquina.tipo, "parqueadero_id": maquina.parqueadero_id}
+    try:
+        db = SessionLocal()
+        maquina = db.query(Maquina).filter(Maquina.codigo_qr == codigo_qr).first()
+        db.close()
+        if not maquina: raise HTTPException(404, "Máquina no encontrada")
+        return {"id": maquina.id, "nombre": maquina.nombre, "tipo": maquina.tipo, "parqueadero_id": maquina.parqueadero_id}
+    except Exception as e:
+        raise HTTPException(500, f"Error: {str(e)}")
 
 @app.get("/tecnico/jornada_activa")
 def jornada_activa(user=Depends(get_current_user)):
-    if user.rol != 'tecnico': raise HTTPException(403)
-    db = SessionLocal()
-    activa = db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first()
-    db.close()
-    return {"activa": activa is not None}
+    try:
+        if user.rol != 'tecnico': raise HTTPException(403)
+        db = SessionLocal()
+        activa = db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first()
+        db.close()
+        return {"activa": activa is not None}
+    except Exception as e:
+        raise HTTPException(500, f"Error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
