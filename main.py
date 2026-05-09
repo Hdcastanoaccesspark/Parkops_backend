@@ -10,11 +10,6 @@ import bcrypt
 import jwt
 import math
 import os
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 from fpdf import FPDF
 
 # ----- Base de datos -----
@@ -90,14 +85,13 @@ class Maquina(Base):
     lat = Column(Float, nullable=True)
     lon = Column(Float, nullable=True)
 
-# Crear tablas SOLO si no existen (sin borrar datos)
+# Crear tablas SOLO si no existen
 Base.metadata.create_all(bind=engine)
 
-# ----- Auto‐configuración: insertar datos de prueba si no hay -----
+# ----- Datos de prueba -----
 def seed_database():
     db = SessionLocal()
     try:
-        # Insertar usuarios SOLO si la tabla está vacía
         if db.query(User).count() == 0:
             usuarios = [
                 {"email": "cliente@test.com", "password": "1234", "rol": "cliente", "nombre": "Cliente Demo"},
@@ -112,7 +106,6 @@ def seed_database():
                             eps=u.get("eps"), arl=u.get("arl"), rh=u.get("rh"), contacto_emergencia=u.get("contacto_emergencia")))
             db.commit()
 
-        # Insertar parqueaderos y máquinas solo si no hay ninguno
         if db.query(Parqueadero).count() == 0:
             p1 = Parqueadero(nombre="Parqueadero Centro", direccion="Calle 19 # 5-30", lat=4.598, lon=-74.071, ciudad="Bogotá")
             p2 = Parqueadero(nombre="Centro Comercial Unicentro", direccion="Cra 68 # 90-12", lat=4.676, lon=-74.077, ciudad="Bogotá")
@@ -172,7 +165,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 def distancia(lat1, lon1, lat2, lon2):
     return math.sqrt((lat1-lat2)**2 + (lon1-lon2)**2)
 
-# --- Función para generar PDF ---
 def generar_pdf(solicitud_id: int):
     db = SessionLocal()
     solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id).first()
@@ -190,26 +182,18 @@ def generar_pdf(solicitud_id: int):
     pdf.ln(10)
     pdf.set_font("Arial", size=10)
     pdf.cell(200, 8, txt=f"ID Solicitud: {solicitud_id}", ln=True)
-    pdf.cell(200, 8, txt=f"Cliente: {cliente.nombre if cliente else 'N/A'} ({cliente.email if cliente else ''})", ln=True)
+    pdf.cell(200, 8, txt=f"Cliente: {cliente.nombre if cliente else 'N/A'}", ln=True)
     pdf.cell(200, 8, txt=f"Tecnico: {tecnico.nombre if tecnico else 'N/A'}", ln=True)
     pdf.cell(200, 8, txt=f"Tipo: {solicitud.tipo}", ln=True)
     pdf.cell(200, 8, txt=f"Descripcion: {solicitud.descripcion[:100]}...", ln=True)
     pdf.cell(200, 8, txt=f"Estado: {solicitud.estado}", ln=True)
-    pdf.cell(200, 8, txt=f"Fecha creacion: {solicitud.fecha_creacion}", ln=True)
-    pdf.cell(200, 8, txt=f"Fecha fin: {solicitud.fecha_fin}", ln=True)
+    pdf.cell(200, 8, txt=f"Fecha: {solicitud.fecha_creacion} a {solicitud.fecha_fin}", ln=True)
     if solicitud.firma:
         pdf.ln(5)
         pdf.cell(200, 8, txt="Firma digital registrada", ln=True)
     pdf.output(f"/tmp/solicitud_{solicitud_id}.pdf")
     return f"/tmp/solicitud_{solicitud_id}.pdf"
 
-# --- Función para enviar correo (simulado) ---
-def enviar_correo(destinatario, asunto, mensaje, adjunto=None):
-    print(f"📧 Enviando correo a {destinatario} - Asunto: {asunto}")
-    if adjunto:
-        print(f"   Adjunto: {adjunto}")
-
-# --- Endpoints ---
 @app.get("/")
 def root():
     return {"mensaje": "ParkOps API funcionando"}
@@ -241,19 +225,27 @@ def get_usuario(user_id: int, user=Depends(get_current_user)):
 
 @app.post("/solicitudes/crear")
 def crear_solicitud(descripcion: str = Form(...), lat: float = Form(...), lon: float = Form(...), tipo: str = Form(...), fotos: str = Form(""), maquina_id: int = Form(None), user=Depends(get_current_user)):
-    if user.rol not in ['cliente', 'tecnico']:    # Permitir también a técnicos
+    if user.rol not in ['cliente', 'tecnico']:
         raise HTTPException(403, "No autorizado")
     db = SessionLocal()
     tecnicos = db.query(User).filter(User.rol == 'tecnico', User.disponible == True).all()
-    if not tecnicos:
-        db.close()
-        raise HTTPException(404, "No hay técnicos disponibles")
-    tecnico = min(tecnicos, key=lambda t: distancia(lat, lon, t.lat or 0, t.lon or 0))
-    solicitud = Solicitud(cliente_id=user.id, descripcion=descripcion, lat=lat, lon=lon, tipo=tipo, estado='asignada', tecnico_id=tecnico.id, maquina_id=maquina_id, fecha_asignacion=datetime.utcnow(), fotos=fotos)
+    if tecnicos:
+        tecnico = min(tecnicos, key=lambda t: distancia(lat, lon, t.lat or 0, t.lon or 0))
+        estado = 'asignada'
+        fecha_asignacion = datetime.utcnow()
+    else:
+        tecnico = None
+        estado = 'pendiente'
+        fecha_asignacion = None
+    solicitud = Solicitud(
+        cliente_id=user.id, descripcion=descripcion, lat=lat, lon=lon, tipo=tipo,
+        estado=estado, tecnico_id=tecnico.id if tecnico else None,
+        maquina_id=maquina_id, fecha_asignacion=fecha_asignacion, fotos=fotos
+    )
     db.add(solicitud)
     db.commit()
     db.close()
-    return {"mensaje": "Solicitud creada", "tecnico": tecnico.nombre, "solicitud_id": solicitud.id}
+    return {"mensaje": "Solicitud creada", "tecnico": tecnico.nombre if tecnico else "Pendiente de asignación", "solicitud_id": solicitud.id}
 
 @app.get("/api/solicitudes")
 def listar_solicitudes(user=Depends(get_current_user)):
@@ -302,8 +294,8 @@ def aceptar_solicitud(solicitud_id: int, user=Depends(get_current_user)):
     if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
     db = SessionLocal()
     solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id, Solicitud.tecnico_id == user.id).first()
-    if not solicitud or solicitud.estado != 'asignada': db.close(); raise HTTPException(404, "Solicitud no válida")
-    solicitud.estado = 'aceptada'; solicitud.fecha_aceptacion = datetime.utcnow()
+    if not solicitud or solicitud.estado not in ['asignada', 'pendiente']: db.close(); raise HTTPException(404, "Solicitud no válida")
+    solicitud.estado = 'aceptada'; solicitud.tecnico_id = user.id; solicitud.fecha_aceptacion = datetime.utcnow()
     user.estado = 'ocupado'; db.commit(); db.close()
     return {"mensaje": "Solicitud aceptada"}
 
@@ -326,15 +318,15 @@ def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = For
     solicitud.estado = 'finalizada'; solicitud.items = items; solicitud.firma = firma
     solicitud.fecha_fin = datetime.utcnow(); user.estado = 'libre'
     db.commit()
-    # Generar PDF y enviar correo
     try:
         pdf_path = generar_pdf(solicitud_id)
         cliente = db.query(User).filter(User.id == solicitud.cliente_id).first()
-        enviar_correo(cliente.email, "Reporte de servicio finalizado", "Adjunto el reporte técnico.", pdf_path)
+        if cliente:
+            print(f"📧 PDF generado para {cliente.email}")
     except:
         pass
     db.close()
-    return {"mensaje": "Servicio finalizado, PDF generado y enviado"}
+    return {"mensaje": "Servicio finalizado, PDF generado"}
 
 @app.get("/reporte/{solicitud_id}/pdf")
 def descargar_pdf(solicitud_id: int, user=Depends(get_current_user)):
@@ -371,7 +363,6 @@ def jornada_activa(user=Depends(get_current_user)):
     db.close()
     return {"activa": activa is not None}
 
-# Para correr localmente
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=10000)
