@@ -3,19 +3,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta
 import bcrypt
 import jwt
 import math
-import os
 
-# ----- Configuración de base de datos -----
+# ----- Base de datos -----
 engine = create_engine('sqlite:///parkops.db', connect_args={'check_same_thread': False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
-# ----- Modelos -----
+# ----- Modelos (sin cambios) -----
 class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
@@ -83,75 +82,67 @@ class Maquina(Base):
     lat = Column(Float, nullable=True)
     lon = Column(Float, nullable=True)
 
-Base.metadata.drop_all(bind=engine)
+# Crear tablas SOLO si no existen (sin borrar datos)
 Base.metadata.create_all(bind=engine)
 
-# ----- Función para crear/actualizar usuario -----
-def crear_usuario(db, email, password, rol, nombre, eps=None, arl=None, rh=None, contacto_emergencia=None, foto_perfil=None):
-    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-    user = db.query(User).filter(User.email == email).first()
-    if user:
-        user.password = hashed.decode()
-        user.rol = rol
-        user.nombre = nombre
-        user.eps = eps
-        user.arl = arl
-        user.rh = rh
-        user.contacto_emergencia = contacto_emergencia
-        user.foto_perfil = foto_perfil
-    else:
-        user = User(
-            email=email, password=hashed.decode(), rol=rol, nombre=nombre,
-            eps=eps, arl=arl, rh=rh, contacto_emergencia=contacto_emergencia, foto_perfil=foto_perfil
-        )
-        db.add(user)
-    db.commit()
-    return user
+# ----- Auto‐configuración: insertar datos de prueba si no hay -----
+def seed_database():
+    db = SessionLocal()
+    try:
+        # Insertar usuarios SOLO si la tabla está vacía
+        if db.query(User).count() == 0:
+            usuarios = [
+                {"email": "cliente@test.com", "password": "1234", "rol": "cliente", "nombre": "Cliente Demo"},
+                {"email": "tecnico1@test.com", "password": "1234", "rol": "tecnico", "nombre": "Tecnico Juan", "eps": "Nueva EPS", "arl": "Positiva", "rh": "O+", "contacto_emergencia": "Maria Perez - 3111234567"},
+                {"email": "tecnico2@test.com", "password": "1234", "rol": "tecnico", "nombre": "Tecnico Maria", "eps": "Sanitas", "arl": "Sura", "rh": "A-", "contacto_emergencia": "Luis Rodriguez - 3109876543"},
+                {"email": "coordinador@test.com", "password": "1234", "rol": "coordinador", "nombre": "Coord Ana"},
+                {"email": "lider@test.com", "password": "1234", "rol": "lider", "nombre": "Lider Carlos"},
+            ]
+            for u in usuarios:
+                hashed = bcrypt.hashpw(u["password"].encode(), bcrypt.gensalt())
+                db.add(User(email=u["email"], password=hashed.decode(), rol=u["rol"], nombre=u["nombre"],
+                            eps=u.get("eps"), arl=u.get("arl"), rh=u.get("rh"), contacto_emergencia=u.get("contacto_emergencia")))
+            db.commit()
 
-# ----- Crear usuarios de prueba -----
-db = SessionLocal()
-crear_usuario(db, "cliente@test.com", "1234", "cliente", "Cliente Demo")
-crear_usuario(db, "tecnico1@test.com", "1234", "tecnico", "Tecnico Juan", "Nueva EPS", "Positiva", "O+", "Maria Perez - 3111234567", "")
-crear_usuario(db, "tecnico2@test.com", "1234", "tecnico", "Tecnico Maria", "Sanitas", "Sura", "A-", "Luis Rodriguez - 3109876543", "")
-crear_usuario(db, "coordinador@test.com", "1234", "coordinador", "Coord Ana")
-crear_usuario(db, "lider@test.com", "1234", "lider", "Lider Carlos")
-db.close()
+        # Insertar parqueaderos y máquinas solo si no hay ninguno
+        if db.query(Parqueadero).count() == 0:
+            p1 = Parqueadero(nombre="Parqueadero Centro", direccion="Calle 19 # 5-30", lat=4.598, lon=-74.071, ciudad="Bogotá")
+            p2 = Parqueadero(nombre="Centro Comercial Unicentro", direccion="Cra 68 # 90-12", lat=4.676, lon=-74.077, ciudad="Bogotá")
+            p3 = Parqueadero(nombre="Parqueadero El Dorado", direccion="Av. El Dorado", lat=4.701, lon=-74.146, ciudad="Bogotá")
+            p4 = Parqueadero(nombre="Parqueadero Chapinero", direccion="Calle 45 # 15-80", lat=4.641, lon=-74.065, ciudad="Bogotá")
+            p5 = Parqueadero(nombre="Parqueadero Salitre", direccion="Calle 24 # 60-10", lat=4.653, lon=-74.104, ciudad="Bogotá")
+            db.add_all([p1, p2, p3, p4, p5])
+            db.commit()
+            config = [
+                {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
+                {"validador_tipo": "QR", "dispensador_tipo": "Papel"},
+                {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
+                {"validador_tipo": "QR", "dispensador_tipo": "Tarjeta"},
+                {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
+            ]
+            maquinas = []
+            for idx, p in enumerate([p1, p2, p3, p4, p5]):
+                i = idx + 1
+                cfg = config[idx]
+                maquinas.append(Maquina(codigo_qr=f"VAL_{i:03d}", nombre=f"Validador {cfg['validador_tipo']}", tipo="Validador", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"DISP_{i:03d}", nombre=f"Dispensador {cfg['dispensador_tipo']}", tipo="Dispensador", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"BAR_ENT_{i:03d}", nombre=f"Barrera Entrada {i}", tipo="Barrera", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"BAR_SAL_{i:03d}", nombre=f"Barrera Salida {i}", tipo="Barrera", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"CAM_LAT1_{i:03d}", nombre=f"Cámara Lateral 1", tipo="Camara", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"CAM_LAT2_{i:03d}", nombre=f"Cámara Lateral 2", tipo="Camara", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"CAM_PISO_{i:03d}", nombre=f"Cámara de Piso", tipo="Camara", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"LPR_ENT_{i:03d}", nombre=f"LPR Entrada {i}", tipo="LPR", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"LPR_SAL_{i:03d}", nombre=f"LPR Salida {i}", tipo="LPR", parqueadero_id=p.id))
+                maquinas.append(Maquina(codigo_qr=f"CAJ_{i:03d}", nombre=f"Cajero {i}", tipo="Cajero", parqueadero_id=p.id))
+            db.add_all(maquinas)
+            db.commit()
+    except Exception as e:
+        print(f"Error seeding database: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
-# ----- Crear parqueaderos y máquinas automáticamente (sin necesidad de endpoint) -----
-db = SessionLocal()
-if db.query(Parqueadero).count() == 0:
-    p1 = Parqueadero(nombre="Parqueadero Centro", direccion="Calle 19 # 5-30", lat=4.598, lon=-74.071, ciudad="Bogotá")
-    p2 = Parqueadero(nombre="Centro Comercial Unicentro", direccion="Cra 68 # 90-12", lat=4.676, lon=-74.077, ciudad="Bogotá")
-    p3 = Parqueadero(nombre="Parqueadero El Dorado", direccion="Av. El Dorado", lat=4.701, lon=-74.146, ciudad="Bogotá")
-    p4 = Parqueadero(nombre="Parqueadero Chapinero", direccion="Calle 45 # 15-80", lat=4.641, lon=-74.065, ciudad="Bogotá")
-    p5 = Parqueadero(nombre="Parqueadero Salitre", direccion="Calle 24 # 60-10", lat=4.653, lon=-74.104, ciudad="Bogotá")
-    db.add_all([p1, p2, p3, p4, p5])
-    db.commit()
-    
-    config = [
-        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
-        {"validador_tipo": "QR", "dispensador_tipo": "Papel"},
-        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
-        {"validador_tipo": "QR", "dispensador_tipo": "Tarjeta"},
-        {"validador_tipo": "Tarjeta", "dispensador_tipo": "Tarjeta"},
-    ]
-    maquinas = []
-    for idx, p in enumerate([p1, p2, p3, p4, p5]):
-        i = idx + 1
-        cfg = config[idx]
-        maquinas.append(Maquina(codigo_qr=f"VAL_{i:03d}", nombre=f"Validador {cfg['validador_tipo']}", tipo="Validador", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"DISP_{i:03d}", nombre=f"Dispensador {cfg['dispensador_tipo']}", tipo="Dispensador", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"BAR_ENT_{i:03d}", nombre=f"Barrera Entrada {i}", tipo="Barrera", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"BAR_SAL_{i:03d}", nombre=f"Barrera Salida {i}", tipo="Barrera", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"CAM_LAT1_{i:03d}", nombre=f"Cámara Lateral 1", tipo="Camara", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"CAM_LAT2_{i:03d}", nombre=f"Cámara Lateral 2", tipo="Camara", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"CAM_PISO_{i:03d}", nombre=f"Cámara de Piso", tipo="Camara", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"LPR_ENT_{i:03d}", nombre=f"LPR Entrada {i}", tipo="LPR", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"LPR_SAL_{i:03d}", nombre=f"LPR Salida {i}", tipo="LPR", parqueadero_id=p.id))
-        maquinas.append(Maquina(codigo_qr=f"CAJ_{i:03d}", nombre=f"Cajero {i}", tipo="Cajero", parqueadero_id=p.id))
-    db.add_all(maquinas)
-    db.commit()
-db.close()
+seed_database()
 
 # ----- FastAPI app -----
 app = FastAPI(title="ParkOps API")
@@ -177,18 +168,6 @@ def distancia(lat1, lon1, lat2, lon2):
 def root():
     return {"mensaje": "ParkOps API funcionando"}
 
-@app.post("/auth/register")
-def register(email: str = Form(...), password: str = Form(...), rol: str = Form(...), nombre: str = Form(...)):
-    db = SessionLocal()
-    if db.query(User).filter(User.email == email).first():
-        raise HTTPException(400, "Email ya registrado")
-    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-    user = User(email=email, password=hashed.decode(), rol=rol, nombre=nombre)
-    db.add(user)
-    db.commit()
-    db.close()
-    return {"mensaje": "Usuario creado"}
-
 @app.post("/auth/login")
 def login(email: str = Form(...), password: str = Form(...)):
     db = SessionLocal()
@@ -209,15 +188,9 @@ def get_usuario(user_id: int, user=Depends(get_current_user)):
     if not usuario:
         raise HTTPException(404, "Usuario no encontrado")
     return {
-        "id": usuario.id,
-        "nombre": usuario.nombre,
-        "email": usuario.email,
-        "rol": usuario.rol,
-        "eps": usuario.eps,
-        "arl": usuario.arl,
-        "rh": usuario.rh,
-        "contacto_emergencia": usuario.contacto_emergencia,
-        "foto_perfil": usuario.foto_perfil
+        "id": usuario.id, "nombre": usuario.nombre, "email": usuario.email, "rol": usuario.rol,
+        "eps": usuario.eps, "arl": usuario.arl, "rh": usuario.rh,
+        "contacto_emergencia": usuario.contacto_emergencia, "foto_perfil": usuario.foto_perfil
     }
 
 @app.post("/solicitudes/crear")
@@ -230,18 +203,7 @@ def crear_solicitud(descripcion: str = Form(...), lat: float = Form(...), lon: f
         db.close()
         raise HTTPException(404, "No hay técnicos disponibles")
     tecnico = min(tecnicos, key=lambda t: distancia(lat, lon, t.lat or 0, t.lon or 0))
-    solicitud = Solicitud(
-        cliente_id=user.id,
-        descripcion=descripcion,
-        lat=lat,
-        lon=lon,
-        tipo=tipo,
-        estado='asignada',
-        tecnico_id=tecnico.id,
-        maquina_id=maquina_id,
-        fecha_asignacion=datetime.utcnow(),
-        fotos=fotos
-    )
+    solicitud = Solicitud(cliente_id=user.id, descripcion=descripcion, lat=lat, lon=lon, tipo=tipo, estado='asignada', tecnico_id=tecnico.id, maquina_id=maquina_id, fecha_asignacion=datetime.utcnow(), fotos=fotos)
     db.add(solicitud)
     db.commit()
     db.close()
@@ -263,99 +225,61 @@ def listar_solicitudes(user=Depends(get_current_user)):
         if s.cliente_id:
             db2 = SessionLocal()
             cliente = db2.query(User).filter(User.id == s.cliente_id).first()
-            if cliente:
-                cliente_nombre = cliente.nombre
+            if cliente: cliente_nombre = cliente.nombre
             db2.close()
-        result.append({
-            "id": s.id,
-            "descripcion": s.descripcion,
-            "estado": s.estado,
-            "tipo": s.tipo,
-            "cliente_nombre": cliente_nombre
-        })
+        result.append({"id": s.id, "descripcion": s.descripcion, "estado": s.estado, "tipo": s.tipo, "cliente_nombre": cliente_nombre})
     return result
 
 @app.post("/tecnico/iniciar_jornada")
 def iniciar_jornada(lat: float = Form(...), lon: float = Form(...), user=Depends(get_current_user)):
-    if user.rol != 'tecnico':
-        raise HTTPException(403, "No autorizado")
+    if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
     db = SessionLocal()
-    activa = db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first()
-    if activa:
-        db.close()
-        raise HTTPException(400, "Ya hay jornada activa")
+    if db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first():
+        db.close(); raise HTTPException(400, "Ya hay jornada activa")
     nueva = Jornada(tecnico_id=user.id, inicio=datetime.utcnow(), lat_inicio=lat, lon_inicio=lon)
-    user.disponible = True
-    user.lat, user.lon = lat, lon
-    db.add(nueva)
-    db.commit()
-    db.close()
+    user.disponible = True; user.lat, user.lon = lat, lon
+    db.add(nueva); db.commit(); db.close()
     return {"mensaje": "Jornada iniciada"}
 
 @app.post("/tecnico/finalizar_jornada")
 def finalizar_jornada(lat: float = Form(...), lon: float = Form(...), user=Depends(get_current_user)):
-    if user.rol != 'tecnico':
-        raise HTTPException(403, "No autorizado")
+    if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
     db = SessionLocal()
     jornada = db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first()
-    if not jornada:
-        db.close()
-        raise HTTPException(404, "No hay jornada activa")
-    jornada.fin = datetime.utcnow()
-    jornada.lat_fin, jornada.lon_fin = lat, lon
-    user.disponible = False
-    db.commit()
-    db.close()
+    if not jornada: db.close(); raise HTTPException(404, "No hay jornada activa")
+    jornada.fin = datetime.utcnow(); jornada.lat_fin, jornada.lon_fin = lat, lon
+    user.disponible = False; db.commit(); db.close()
     return {"mensaje": "Jornada finalizada"}
 
 @app.post("/tecnico/aceptar/{solicitud_id}")
 def aceptar_solicitud(solicitud_id: int, user=Depends(get_current_user)):
-    if user.rol != 'tecnico':
-        raise HTTPException(403, "No autorizado")
+    if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
     db = SessionLocal()
     solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id, Solicitud.tecnico_id == user.id).first()
-    if not solicitud or solicitud.estado != 'asignada':
-        db.close()
-        raise HTTPException(404, "Solicitud no válida")
-    solicitud.estado = 'aceptada'
-    solicitud.fecha_aceptacion = datetime.utcnow()
-    user.estado = 'ocupado'
-    db.commit()
-    db.close()
+    if not solicitud or solicitud.estado != 'asignada': db.close(); raise HTTPException(404, "Solicitud no válida")
+    solicitud.estado = 'aceptada'; solicitud.fecha_aceptacion = datetime.utcnow()
+    user.estado = 'ocupado'; db.commit(); db.close()
     return {"mensaje": "Solicitud aceptada"}
 
 @app.post("/tecnico/iniciar_servicio/{solicitud_id}")
 def iniciar_servicio(solicitud_id: int, lat: float = Form(...), lon: float = Form(...), user=Depends(get_current_user)):
-    if user.rol != 'tecnico':
-        raise HTTPException(403, "No autorizado")
+    if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
     db = SessionLocal()
     solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id, Solicitud.tecnico_id == user.id).first()
-    if not solicitud or solicitud.estado != 'aceptada':
-        db.close()
-        raise HTTPException(404, "Solicitud no aceptada")
-    solicitud.estado = 'en_proceso'
-    solicitud.fecha_inicio = datetime.utcnow()
-    user.estado = 'en_servicio'
-    db.commit()
-    db.close()
+    if not solicitud or solicitud.estado != 'aceptada': db.close(); raise HTTPException(404, "Solicitud no aceptada")
+    solicitud.estado = 'en_proceso'; solicitud.fecha_inicio = datetime.utcnow()
+    user.estado = 'en_servicio'; db.commit(); db.close()
     return {"mensaje": "Servicio iniciado"}
 
 @app.post("/tecnico/cerrar_solicitud/{solicitud_id}")
 def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = Form(...), user=Depends(get_current_user)):
-    if user.rol != 'tecnico':
-        raise HTTPException(403, "No autorizado")
+    if user.rol != 'tecnico': raise HTTPException(403, "No autorizado")
     db = SessionLocal()
     solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id, Solicitud.tecnico_id == user.id).first()
-    if not solicitud or solicitud.estado != 'en_proceso':
-        db.close()
-        raise HTTPException(404, "Solicitud no en proceso")
-    solicitud.estado = 'finalizada'
-    solicitud.items = items
-    solicitud.firma = firma
-    solicitud.fecha_fin = datetime.utcnow()
-    user.estado = 'libre'
-    db.commit()
-    db.close()
+    if not solicitud or solicitud.estado != 'en_proceso': db.close(); raise HTTPException(404, "Solicitud no en proceso")
+    solicitud.estado = 'finalizada'; solicitud.items = items; solicitud.firma = firma
+    solicitud.fecha_fin = datetime.utcnow(); user.estado = 'libre'
+    db.commit(); db.close()
     return {"mensaje": "Servicio finalizado"}
 
 @app.get("/parqueaderos")
@@ -377,40 +301,18 @@ def buscar_maquina_por_qr(codigo_qr: str, user=Depends(get_current_user)):
     db = SessionLocal()
     maquina = db.query(Maquina).filter(Maquina.codigo_qr == codigo_qr).first()
     db.close()
-    if not maquina:
-        raise HTTPException(404, "Máquina no encontrada")
+    if not maquina: raise HTTPException(404, "Máquina no encontrada")
     return {"id": maquina.id, "nombre": maquina.nombre, "tipo": maquina.tipo, "parqueadero_id": maquina.parqueadero_id}
 
 @app.get("/tecnico/jornada_activa")
 def jornada_activa(user=Depends(get_current_user)):
-    if user.rol != 'tecnico':
-        raise HTTPException(403, "No autorizado")
+    if user.rol != 'tecnico': raise HTTPException(403)
     db = SessionLocal()
     activa = db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first()
     db.close()
     return {"activa": activa is not None}
 
-@app.get("/parqueaderos/{parqueadero_id}/reportes")
-def reportes_por_parqueadero(parqueadero_id: int, user=Depends(get_current_user)):
-    if user.rol != 'tecnico':
-        raise HTTPException(403, "No autorizado")
-    db = SessionLocal()
-    maquinas = db.query(Maquina).filter(Maquina.parqueadero_id == parqueadero_id).all()
-    maquinas_ids = [m.id for m in maquinas]
-    reportes = db.query(Solicitud).filter(
-        Solicitud.tecnico_id == user.id,
-        Solicitud.estado == 'finalizada',
-        Solicitud.maquina_id.in_(maquinas_ids)
-    ).order_by(Solicitud.fecha_fin.desc()).all()
-    db.close()
-    return [{
-        "id": r.id,
-        "descripcion": r.descripcion,
-        "fecha": r.fecha_fin,
-        "tipo": r.tipo,
-        "maquina_nombre": next((m.nombre for m in maquinas if m.id == r.maquina_id), "")
-    } for r in reportes]
-
+# Para correr localmente
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=10000)
