@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import FileResponse
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -8,13 +9,20 @@ from datetime import datetime, timedelta
 import bcrypt
 import jwt
 import math
+import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+from fpdf import FPDF
 
 # ----- Base de datos -----
 engine = create_engine('sqlite:///parkops.db', connect_args={'check_same_thread': False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
-# ----- Modelos (sin cambios) -----
+# ----- Modelos -----
 class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
@@ -164,6 +172,44 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 def distancia(lat1, lon1, lat2, lon2):
     return math.sqrt((lat1-lat2)**2 + (lon1-lon2)**2)
 
+# --- Función para generar PDF ---
+def generar_pdf(solicitud_id: int):
+    db = SessionLocal()
+    solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id).first()
+    if not solicitud:
+        db.close()
+        raise HTTPException(404, "Solicitud no encontrada")
+    cliente = db.query(User).filter(User.id == solicitud.cliente_id).first()
+    tecnico = db.query(User).filter(User.id == solicitud.tecnico_id).first() if solicitud.tecnico_id else None
+    db.close()
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt="ParkOps - Reporte de Servicio", ln=True, align='C')
+    pdf.ln(10)
+    pdf.set_font("Arial", size=10)
+    pdf.cell(200, 8, txt=f"ID Solicitud: {solicitud_id}", ln=True)
+    pdf.cell(200, 8, txt=f"Cliente: {cliente.nombre if cliente else 'N/A'} ({cliente.email if cliente else ''})", ln=True)
+    pdf.cell(200, 8, txt=f"Tecnico: {tecnico.nombre if tecnico else 'N/A'}", ln=True)
+    pdf.cell(200, 8, txt=f"Tipo: {solicitud.tipo}", ln=True)
+    pdf.cell(200, 8, txt=f"Descripcion: {solicitud.descripcion[:100]}...", ln=True)
+    pdf.cell(200, 8, txt=f"Estado: {solicitud.estado}", ln=True)
+    pdf.cell(200, 8, txt=f"Fecha creacion: {solicitud.fecha_creacion}", ln=True)
+    pdf.cell(200, 8, txt=f"Fecha fin: {solicitud.fecha_fin}", ln=True)
+    if solicitud.firma:
+        pdf.ln(5)
+        pdf.cell(200, 8, txt="Firma digital registrada", ln=True)
+    pdf.output(f"/tmp/solicitud_{solicitud_id}.pdf")
+    return f"/tmp/solicitud_{solicitud_id}.pdf"
+
+# --- Función para enviar correo (simulado) ---
+def enviar_correo(destinatario, asunto, mensaje, adjunto=None):
+    print(f"📧 Enviando correo a {destinatario} - Asunto: {asunto}")
+    if adjunto:
+        print(f"   Adjunto: {adjunto}")
+
+# --- Endpoints ---
 @app.get("/")
 def root():
     return {"mensaje": "ParkOps API funcionando"}
@@ -195,8 +241,8 @@ def get_usuario(user_id: int, user=Depends(get_current_user)):
 
 @app.post("/solicitudes/crear")
 def crear_solicitud(descripcion: str = Form(...), lat: float = Form(...), lon: float = Form(...), tipo: str = Form(...), fotos: str = Form(""), maquina_id: int = Form(None), user=Depends(get_current_user)):
-    if user.rol != 'cliente':
-        raise HTTPException(403, "Solo clientes")
+    if user.rol not in ['cliente', 'tecnico']:    # Permitir también a técnicos
+        raise HTTPException(403, "No autorizado")
     db = SessionLocal()
     tecnicos = db.query(User).filter(User.rol == 'tecnico', User.disponible == True).all()
     if not tecnicos:
@@ -279,8 +325,21 @@ def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = For
     if not solicitud or solicitud.estado != 'en_proceso': db.close(); raise HTTPException(404, "Solicitud no en proceso")
     solicitud.estado = 'finalizada'; solicitud.items = items; solicitud.firma = firma
     solicitud.fecha_fin = datetime.utcnow(); user.estado = 'libre'
-    db.commit(); db.close()
-    return {"mensaje": "Servicio finalizado"}
+    db.commit()
+    # Generar PDF y enviar correo
+    try:
+        pdf_path = generar_pdf(solicitud_id)
+        cliente = db.query(User).filter(User.id == solicitud.cliente_id).first()
+        enviar_correo(cliente.email, "Reporte de servicio finalizado", "Adjunto el reporte técnico.", pdf_path)
+    except:
+        pass
+    db.close()
+    return {"mensaje": "Servicio finalizado, PDF generado y enviado"}
+
+@app.get("/reporte/{solicitud_id}/pdf")
+def descargar_pdf(solicitud_id: int, user=Depends(get_current_user)):
+    pdf_path = generar_pdf(solicitud_id)
+    return FileResponse(pdf_path, media_type='application/pdf', filename=f'reporte_{solicitud_id}.pdf')
 
 @app.get("/parqueaderos")
 def listar_parqueaderos(user=Depends(get_current_user)):
