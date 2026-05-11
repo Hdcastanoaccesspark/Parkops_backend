@@ -233,15 +233,9 @@ def get_usuario(user_id: int, user=Depends(get_current_user)):
 
 @app.post("/solicitudes/crear")
 def crear_solicitud(
-    descripcion: str = Form(...),
-    lat: float = Form(...),
-    lon: float = Form(...),
-    tipo: str = Form(...),
-    fotos: str = Form(""),
-    videos: str = Form(""),
-    maquina_id: str = Form(None),
-    user=Depends(get_current_user)
-):
+    descripcion: str = Form(...), lat: float = Form(...), lon: float = Form(...),
+    tipo: str = Form(...), fotos: str = Form(""), videos: str = Form(""),
+    maquina_id: str = Form(None), user=Depends(get_current_user)):
     try:
         if user.rol not in ['cliente', 'tecnico']:
             raise HTTPException(403, "No autorizado")
@@ -257,16 +251,13 @@ def crear_solicitud(
             fecha_asignacion = None
         maq_id = None
         if maquina_id and maquina_id.strip() and maquina_id != 'None':
-            try:
-                maq_id = int(maquina_id)
-            except:
-                pass
+            try: maq_id = int(maquina_id)
+            except: pass
         solicitud = Solicitud(
             cliente_id=user.id, descripcion=descripcion, lat=lat, lon=lon, tipo=tipo,
             estado=estado, tecnico_id=tecnico.id if tecnico else None,
             maquina_id=maq_id, fecha_asignacion=fecha_asignacion,
-            fotos=fotos, videos=videos
-        )
+            fotos=fotos, videos=videos)
         db.add(solicitud)
         db.commit()
         db.close()
@@ -369,7 +360,6 @@ def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = For
             db.close(); raise HTTPException(404, "Solicitud no en proceso")
         solicitud.estado = 'finalizada'; solicitud.items = items; solicitud.firma = firma
         solicitud.fecha_fin = datetime.now(timezone.utc); user.estado = 'libre'
-        # Generar PDF y guardar ruta
         try:
             pdf_path = generar_pdf(solicitud_id)
             solicitud.pdf_path = pdf_path
@@ -387,11 +377,9 @@ def descargar_pdf(solicitud_id: int, user=Depends(get_current_user)):
     solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id).first()
     if not solicitud:
         db.close(); raise HTTPException(404, "Solicitud no encontrada")
-    # Si ya hay ruta guardada y archivo existe, devolver ese
     if solicitud.pdf_path and os.path.exists(solicitud.pdf_path):
         db.close()
         return FileResponse(solicitud.pdf_path, media_type='application/pdf', filename=f'reporte_{solicitud_id}.pdf')
-    # Si no, generar ahora
     pdf_path = generar_pdf(solicitud_id)
     solicitud.pdf_path = pdf_path
     db.commit()
@@ -454,8 +442,7 @@ def devolver_a_pendiente(solicitud_id: int, motivo: str = Form(...), user=Depend
     if not solicitud or solicitud.estado != 'aceptada':
         db.close(); raise HTTPException(400, "La solicitud no está aceptada o no te pertenece")
     solicitud.estado = 'pendiente'
-    # Podrías guardar el motivo en un campo nuevo si agregas un campo 'motivo_pendiente' al modelo.
-    # Por ahora solo cambia estado.
+    # Se podría almacenar el motivo en un campo extra, por ahora solo cambia el estado
     db.commit()
     db.close()
     return {"mensaje": "Solicitud devuelta a pendiente"}
