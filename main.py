@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime, timedelta, timezone   # ← AHORA CON timezone
+from datetime import datetime, timedelta, timezone   # ← CORRECCIÓN AQUÍ
 import bcrypt, jwt, math, os, traceback
 from fpdf import FPDF
 
@@ -52,7 +52,7 @@ class Solicitud(Base):
     videos = Column(Text, nullable=True)
     items = Column(Text, nullable=True)
     firma = Column(Text, nullable=True)
-    pdf_path = Column(String, nullable=True)   # ruta del PDF generado
+    pdf_path = Column(String, nullable=True)
 
 class Jornada(Base):
     __tablename__ = 'jornadas'
@@ -442,7 +442,6 @@ def devolver_a_pendiente(solicitud_id: int, motivo: str = Form(...), user=Depend
     if not solicitud or solicitud.estado != 'aceptada':
         db.close(); raise HTTPException(400, "La solicitud no está aceptada o no te pertenece")
     solicitud.estado = 'pendiente'
-    # Se podría almacenar el motivo en un campo extra, por ahora solo cambia el estado
     db.commit()
     db.close()
     return {"mensaje": "Solicitud devuelta a pendiente"}
