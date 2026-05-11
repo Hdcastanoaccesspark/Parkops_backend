@@ -5,12 +5,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime, timedelta, timezone
-import bcrypt
-import jwt
-import math
-import os
-import traceback
+from datetime import datetime, timedelta, timezone   # ← AHORA CON timezone
+import bcrypt, jwt, math, os, traceback
 from fpdf import FPDF
 
 # ----- Base de datos -----
@@ -56,6 +52,7 @@ class Solicitud(Base):
     videos = Column(Text, nullable=True)
     items = Column(Text, nullable=True)
     firma = Column(Text, nullable=True)
+    pdf_path = Column(String, nullable=True)   # ruta del PDF generado
 
 class Jornada(Base):
     __tablename__ = 'jornadas'
@@ -89,6 +86,7 @@ class Maquina(Base):
 
 Base.metadata.create_all(bind=engine)
 
+# ----- Seed de datos -----
 def seed_database():
     db = SessionLocal()
     try:
@@ -174,7 +172,6 @@ def generar_pdf(solicitud_id: int):
     cliente = db.query(User).filter(User.id == solicitud.cliente_id).first()
     tecnico = db.query(User).filter(User.id == solicitud.tecnico_id).first() if solicitud.tecnico_id else None
     db.close()
-
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
@@ -185,8 +182,11 @@ def generar_pdf(solicitud_id: int):
     pdf.cell(200, 8, txt=f"Cliente: {cliente.nombre if cliente else 'N/A'}", ln=True)
     pdf.cell(200, 8, txt=f"Tecnico: {tecnico.nombre if tecnico else 'N/A'}", ln=True)
     pdf.cell(200, 8, txt=f"Tipo: {solicitud.tipo}", ln=True)
-    pdf.cell(200, 8, txt=f"Descripcion: {solicitud.descripcion[:100]}...", ln=True)
+    pdf.cell(200, 8, txt=f"Descripcion: {solicitud.descripcion[:150]}...", ln=True)
     pdf.cell(200, 8, txt=f"Estado: {solicitud.estado}", ln=True)
+    if solicitud.fotos:
+        fotos_list = [f for f in solicitud.fotos.split(',') if f]
+        pdf.cell(200, 8, txt=f"Fotos adjuntas: {len(fotos_list)}", ln=True)
     pdf.cell(200, 8, txt=f"Fecha: {solicitud.fecha_creacion} a {solicitud.fecha_fin}", ln=True)
     if solicitud.firma:
         pdf.ln(5)
@@ -194,6 +194,7 @@ def generar_pdf(solicitud_id: int):
     pdf.output(f"/tmp/solicitud_{solicitud_id}.pdf")
     return f"/tmp/solicitud_{solicitud_id}.pdf"
 
+# --------------------- ENDPOINTS ------------------------
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
@@ -294,7 +295,10 @@ def listar_solicitudes(user=Depends(get_current_user)):
                 cliente = db2.query(User).filter(User.id == s.cliente_id).first()
                 if cliente: cliente_nombre = cliente.nombre
                 db2.close()
-            result.append({"id": s.id, "descripcion": s.descripcion, "estado": s.estado, "tipo": s.tipo, "cliente_nombre": cliente_nombre})
+            result.append({
+                "id": s.id, "descripcion": s.descripcion, "estado": s.estado, "tipo": s.tipo,
+                "cliente_nombre": cliente_nombre, "tecnico_id": s.tecnico_id
+            })
         return result
     except Exception as e:
         raise HTTPException(500, f"Error al listar solicitudes: {str(e)}")
@@ -365,14 +369,13 @@ def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = For
             db.close(); raise HTTPException(404, "Solicitud no en proceso")
         solicitud.estado = 'finalizada'; solicitud.items = items; solicitud.firma = firma
         solicitud.fecha_fin = datetime.now(timezone.utc); user.estado = 'libre'
-        db.commit()
+        # Generar PDF y guardar ruta
         try:
             pdf_path = generar_pdf(solicitud_id)
-            cliente = db.query(User).filter(User.id == solicitud.cliente_id).first()
-            if cliente:
-                print(f"📧 PDF generado para {cliente.email}")
-        except:
-            pass
+            solicitud.pdf_path = pdf_path
+        except Exception as e:
+            print(f"Error generando PDF: {e}")
+        db.commit()
         db.close()
         return {"mensaje": "Servicio finalizado, PDF generado"}
     except Exception as e:
@@ -380,7 +383,19 @@ def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = For
 
 @app.get("/reporte/{solicitud_id}/pdf")
 def descargar_pdf(solicitud_id: int, user=Depends(get_current_user)):
+    db = SessionLocal()
+    solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id).first()
+    if not solicitud:
+        db.close(); raise HTTPException(404, "Solicitud no encontrada")
+    # Si ya hay ruta guardada y archivo existe, devolver ese
+    if solicitud.pdf_path and os.path.exists(solicitud.pdf_path):
+        db.close()
+        return FileResponse(solicitud.pdf_path, media_type='application/pdf', filename=f'reporte_{solicitud_id}.pdf')
+    # Si no, generar ahora
     pdf_path = generar_pdf(solicitud_id)
+    solicitud.pdf_path = pdf_path
+    db.commit()
+    db.close()
     return FileResponse(pdf_path, media_type='application/pdf', filename=f'reporte_{solicitud_id}.pdf')
 
 @app.get("/tecnicos")
@@ -409,6 +424,41 @@ def asignar_tecnico(solicitud_id: int, tecnico_id: int = Form(...), user=Depends
     db.commit()
     db.close()
     return {"mensaje": f"Solicitud asignada a {tecnico.nombre}"}
+
+@app.put("/solicitudes/{solicitud_id}/reasignar")
+def reasignar_tecnico(solicitud_id: int, nuevo_tecnico_id: int = Form(...), user=Depends(get_current_user)):
+    if user.rol not in ['coordinador', 'lider']:
+        raise HTTPException(403, "No autorizado")
+    db = SessionLocal()
+    solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id).first()
+    if not solicitud:
+        db.close(); raise HTTPException(404, "Solicitud no encontrada")
+    if solicitud.estado in ['finalizada', 'cancelada']:
+        db.close(); raise HTTPException(400, "No se puede reasignar una solicitud finalizada")
+    nuevo_tec = db.query(User).filter(User.id == nuevo_tecnico_id, User.rol == 'tecnico').first()
+    if not nuevo_tec:
+        db.close(); raise HTTPException(404, "Técnico no encontrado")
+    solicitud.tecnico_id = nuevo_tecnico_id
+    solicitud.estado = 'asignada'
+    solicitud.fecha_asignacion = datetime.now(timezone.utc)
+    db.commit()
+    db.close()
+    return {"mensaje": f"Solicitud reasignada a {nuevo_tec.nombre}"}
+
+@app.post("/tecnico/devolver_a_pendiente/{solicitud_id}")
+def devolver_a_pendiente(solicitud_id: int, motivo: str = Form(...), user=Depends(get_current_user)):
+    if user.rol != 'tecnico':
+        raise HTTPException(403, "No autorizado")
+    db = SessionLocal()
+    solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id, Solicitud.tecnico_id == user.id).first()
+    if not solicitud or solicitud.estado != 'aceptada':
+        db.close(); raise HTTPException(400, "La solicitud no está aceptada o no te pertenece")
+    solicitud.estado = 'pendiente'
+    # Podrías guardar el motivo en un campo nuevo si agregas un campo 'motivo_pendiente' al modelo.
+    # Por ahora solo cambia estado.
+    db.commit()
+    db.close()
+    return {"mensaje": "Solicitud devuelta a pendiente"}
 
 @app.delete("/solicitudes/{solicitud_id}")
 def cancelar_solicitud(solicitud_id: int, user=Depends(get_current_user)):
