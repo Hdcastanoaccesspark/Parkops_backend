@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
 import math
@@ -47,7 +47,7 @@ class Solicitud(Base):
     estado = Column(String)
     tecnico_id = Column(Integer, nullable=True)
     maquina_id = Column(Integer, nullable=True)
-    fecha_creacion = Column(DateTime, default=datetime.utcnow)
+    fecha_creacion = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     fecha_asignacion = Column(DateTime, nullable=True)
     fecha_aceptacion = Column(DateTime, nullable=True)
     fecha_inicio = Column(DateTime, nullable=True)
@@ -212,7 +212,7 @@ def login(email: str = Form(...), password: str = Form(...)):
     db.close()
     if not user or not bcrypt.checkpw(password.encode(), user.password.encode()):
         raise HTTPException(401, "Credenciales incorrectas")
-    token = jwt.encode({"user_id": user.id, "rol": user.rol, "exp": datetime.utcnow() + timedelta(hours=24)}, SECRET_KEY)
+    token = jwt.encode({"user_id": user.id, "rol": user.rol, "exp": datetime.now(timezone.utc) + timedelta(hours=24)}, SECRET_KEY)
     return {"token": token, "rol": user.rol, "user_id": user.id}
 
 @app.get("/usuarios/{user_id}")
@@ -249,7 +249,7 @@ def crear_solicitud(
         if tecnicos:
             tecnico = min(tecnicos, key=lambda t: distancia(lat, lon, t.lat or 0, t.lon or 0))
             estado = 'asignada'
-            fecha_asignacion = datetime.utcnow()
+            fecha_asignacion = datetime.now(timezone.utc)
         else:
             tecnico = None
             estado = 'pendiente'
@@ -306,7 +306,7 @@ def iniciar_jornada(lat: float = Form(...), lon: float = Form(...), user=Depends
         db = SessionLocal()
         if db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first():
             db.close(); raise HTTPException(400, "Ya hay jornada activa")
-        nueva = Jornada(tecnico_id=user.id, inicio=datetime.utcnow(), lat_inicio=lat, lon_inicio=lon)
+        nueva = Jornada(tecnico_id=user.id, inicio=datetime.now(timezone.utc), lat_inicio=lat, lon_inicio=lon)
         user.disponible = True; user.lat, user.lon = lat, lon
         db.add(nueva); db.commit(); db.close()
         return {"mensaje": "Jornada iniciada"}
@@ -320,7 +320,7 @@ def finalizar_jornada(lat: float = Form(...), lon: float = Form(...), user=Depen
         db = SessionLocal()
         jornada = db.query(Jornada).filter(Jornada.tecnico_id == user.id, Jornada.fin == None).first()
         if not jornada: db.close(); raise HTTPException(404, "No hay jornada activa")
-        jornada.fin = datetime.utcnow(); jornada.lat_fin, jornada.lon_fin = lat, lon
+        jornada.fin = datetime.now(timezone.utc); jornada.lat_fin, jornada.lon_fin = lat, lon
         user.disponible = False; db.commit(); db.close()
         return {"mensaje": "Jornada finalizada"}
     except Exception as e:
@@ -335,7 +335,7 @@ def aceptar_solicitud(solicitud_id: int, user=Depends(get_current_user)):
         if not solicitud or solicitud.estado not in ['asignada', 'pendiente']:
             db.close(); raise HTTPException(404, "Solicitud no válida")
         solicitud.estado = 'aceptada'; solicitud.tecnico_id = user.id
-        solicitud.fecha_aceptacion = datetime.utcnow()
+        solicitud.fecha_aceptacion = datetime.now(timezone.utc)
         user.estado = 'ocupado'; db.commit(); db.close()
         return {"mensaje": "Solicitud aceptada"}
     except Exception as e:
@@ -349,7 +349,7 @@ def iniciar_servicio(solicitud_id: int, lat: float = Form(...), lon: float = For
         solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id, Solicitud.tecnico_id == user.id).first()
         if not solicitud or solicitud.estado != 'aceptada':
             db.close(); raise HTTPException(404, "Solicitud no aceptada")
-        solicitud.estado = 'en_proceso'; solicitud.fecha_inicio = datetime.utcnow()
+        solicitud.estado = 'en_proceso'; solicitud.fecha_inicio = datetime.now(timezone.utc)
         user.estado = 'en_servicio'; db.commit(); db.close()
         return {"mensaje": "Servicio iniciado"}
     except Exception as e:
@@ -364,7 +364,7 @@ def cerrar_solicitud(solicitud_id: int, items: str = Form(...), firma: str = For
         if not solicitud or solicitud.estado != 'en_proceso':
             db.close(); raise HTTPException(404, "Solicitud no en proceso")
         solicitud.estado = 'finalizada'; solicitud.items = items; solicitud.firma = firma
-        solicitud.fecha_fin = datetime.utcnow(); user.estado = 'libre'
+        solicitud.fecha_fin = datetime.now(timezone.utc); user.estado = 'libre'
         db.commit()
         try:
             pdf_path = generar_pdf(solicitud_id)
@@ -405,7 +405,7 @@ def asignar_tecnico(solicitud_id: int, tecnico_id: int = Form(...), user=Depends
         db.close(); raise HTTPException(404, "Técnico no encontrado")
     solicitud.tecnico_id = tecnico_id
     solicitud.estado = 'asignada'
-    solicitud.fecha_asignacion = datetime.utcnow()
+    solicitud.fecha_asignacion = datetime.now(timezone.utc)
     db.commit()
     db.close()
     return {"mensaje": f"Solicitud asignada a {tecnico.nombre}"}
@@ -470,4 +470,3 @@ def jornada_activa(user=Depends(get_current_user)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=10000)
-    
