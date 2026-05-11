@@ -2,234 +2,171 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:geolocator/geolocator.dart';
 import '../config.dart';
 
-class ClienteDashboard extends StatefulWidget {
-  const ClienteDashboard({super.key});
+class AdminDashboard extends StatefulWidget {
+  const AdminDashboard({super.key});
   @override
-  ClienteDashboardState createState() => ClienteDashboardState();
+  State<AdminDashboard> createState() => _AdminDashboardState();
 }
 
-class ClienteDashboardState extends State<ClienteDashboard> {
+class _AdminDashboardState extends State<AdminDashboard> {
   List<dynamic> _solicitudes = [];
-  bool _isLoading = true;
+  List<dynamic> _tecnicos = [];
+  bool _loading = true;
+  String? _error;
 
   @override
   void initState() {
     super.initState();
-    _cargarSolicitudes();
+    _cargarDatos();
   }
 
-  Future<void> _cargarSolicitudes() async {
-    setState(() => _isLoading = true);
+  Future<void> _cargarDatos() async {
+    setState(() { _loading = true; _error = null; });
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString('token');
-    if (token == null) { setState(() => _isLoading = false); return; }
+    if (token == null) { setState(() { _loading = false; _error = 'Sin sesión'; }); return; }
     try {
-      final res = await http.get(Uri.parse('$API_BASE_URL/api/solicitudes'), headers: {'Authorization': 'Bearer $token'});
-      if (res.statusCode == 200) {
-        setState(() { _solicitudes = jsonDecode(res.body); _isLoading = false; });
+      final resSol = await http.get(Uri.parse('$API_BASE_URL/api/solicitudes'), headers: {'Authorization': 'Bearer $token'});
+      final resTec = await http.get(Uri.parse('$API_BASE_URL/tecnicos'), headers: {'Authorization': 'Bearer $token'});
+      if (resSol.statusCode == 200 && resTec.statusCode == 200) {
+        setState(() {
+          _solicitudes = jsonDecode(resSol.body);
+          _tecnicos = jsonDecode(resTec.body);
+          _loading = false;
+        });
       } else {
-        setState(() => _isLoading = false);
-        _msg('Error al cargar solicitudes');
+        setState(() { _loading = false; _error = 'Error al cargar datos'; });
       }
     } catch (e) {
-      setState(() => _isLoading = false);
-      _msg('Error de conexión');
+      setState(() { _loading = false; _error = 'Error de conexión'; });
     }
   }
 
-  Future<void> _logout() async {
+  Future<void> _asignarTecnico(dynamic solicitud) async {
+    final tecnicoId = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Selecciona un técnico'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 300,
+          child: ListView.builder(
+            itemCount: _tecnicos.length,
+            itemBuilder: (_, i) {
+              final t = _tecnicos[i];
+              final estado = t['en_jornada'] == true ? '🟢 En jornada' : (t['disponible'] == true ? '🟡 Disponible' : '⚫ No disponible');
+              return ListTile(
+                title: Text(t['nombre']),
+                subtitle: Text(estado),
+                onTap: () => Navigator.pop(ctx, t['id']),
+              );
+            },
+          ),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar'))],
+      ),
+    );
+    if (tecnicoId == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('token');
+    final res = await http.put(
+      Uri.parse('$API_BASE_URL/solicitudes/${solicitud['id']}/asignar'),
+      headers: {'Authorization': 'Bearer $token'},
+      body: {'tecnico_id': tecnicoId.toString()},
+    );
+    if (res.statusCode == 200) {
+      _cargarDatos();
+      _msg('Asignado correctamente');
+    } else {
+      _msg('Error al asignar');
+    }
+  }
+
+  Future<void> _cancelarSolicitud(dynamic solicitud) async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Cerrar sesión'),
-        content: const Text('¿Está seguro de que desea cerrar sesión?'),
+        title: const Text('Cancelar solicitud'),
+        content: const Text('¿Está seguro?'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Sí')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Sí, cancelar')),
         ],
       ),
     );
-    if (confirm == true) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.clear();
-      if (mounted) Navigator.pushReplacementNamed(context, '/login');
-    }
-  }
-
-  void _msg(String m, {bool err = true}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m), backgroundColor: err ? Colors.red : Colors.green));
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('ParkOps - Cliente'), backgroundColor: const Color(0xFF004A99),
-      actions: [IconButton(icon: const Icon(Icons.logout, color: Colors.white), onPressed: _logout, tooltip: 'Cerrar sesión')],
-    ),
-    body: _isLoading ? const Center(child: CircularProgressIndicator())
-    : _solicitudes.isEmpty ? const Center(child: Text('No tienes solicitudes aún.\nPresiona el botón + para crear una.'))
-    : ListView.builder(
-        itemCount: _solicitudes.length,
-        itemBuilder: (_, i) => Card(margin: const EdgeInsets.all(8), child: ListTile(
-          title: Text(_solicitudes[i]['tipo']),
-          subtitle: Text('Estado: ${_solicitudes[i]['estado']}\n${_solicitudes[i]['descripcion']}', maxLines: 2, overflow: TextOverflow.ellipsis),
-          isThreeLine: true,
-        )),
-      ),
-    floatingActionButton: FloatingActionButton(
-      onPressed: () async {
-        final ok = await Navigator.push(context, MaterialPageRoute(builder: (_) => const NuevaSolicitudScreen()));
-        if (ok == true) _cargarSolicitudes();
-      },
-      child: const Icon(Icons.add),
-      backgroundColor: const Color(0xFFE30613),
-    ),
-  );
-}
-
-class NuevaSolicitudScreen extends StatefulWidget {
-  const NuevaSolicitudScreen({super.key});
-  @override
-  NuevaSolicitudScreenState createState() => NuevaSolicitudScreenState();
-}
-
-class NuevaSolicitudScreenState extends State<NuevaSolicitudScreen> {
-  final _desc = TextEditingController();
-  String _tipo = 'preventivo';
-  final List<String> _fotos = [];
-  String? _videoBase64;
-  bool _loading = false;
-  List<dynamic> _maquinas = [];
-  String? _maquinaIdSeleccionada;
-  String? _parqueaderoNombre;
-
-  @override
-  void initState() {
-    super.initState();
-    _cargarDatosParqueadero();
-  }
-
-  Future<void> _cargarDatosParqueadero() async {
+    if (confirm != true) return;
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString('token');
-    if (token == null) return;
-    try {
-      final res = await http.get(Uri.parse('$API_BASE_URL/mi_parqueadero'), headers: {'Authorization': 'Bearer $token'});
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
-        setState(() {
-          _parqueaderoNombre = data['parqueadero']['nombre'];
-          _maquinas = data['maquinas'];
-        });
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _tomarFoto() async {
-    final p = ImagePicker();
-    final f = await p.pickImage(source: ImageSource.camera);
-    if (f != null) {
-      final bytes = await f.readAsBytes();
-      if (mounted) setState(() => _fotos.add(base64Encode(bytes)));
+    final res = await http.delete(
+      Uri.parse('$API_BASE_URL/solicitudes/${solicitud['id']}'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    if (res.statusCode == 200) {
+      _cargarDatos();
+      _msg('Solicitud cancelada');
+    } else {
+      _msg('Error al cancelar');
     }
   }
 
-  Future<void> _grabarVideo() async {
-    final p = ImagePicker();
-    final v = await p.pickVideo(source: ImageSource.camera, maxDuration: const Duration(seconds: 30));
-    if (v != null) {
-      final bytes = await v.readAsBytes();
-      if (mounted) setState(() => _videoBase64 = base64Encode(bytes));
-    }
-  }
-
-  Future<void> _enviar() async {
-    if (_desc.text.isEmpty) { _msg('Escribe una descripción'); return; }
-    setState(() => _loading = true);
-    Position pos;
-    try {
-      pos = await Geolocator.getCurrentPosition();
-    } catch (_) {
-      pos = Position(latitude: 4.6, longitude: -74.0, timestamp: DateTime.now(), accuracy: 10, altitude: 0, heading: 0, speed: 0, speedAccuracy: 0, altitudeAccuracy: 10, headingAccuracy: 10);
-    }
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('token');
-    try {
-      final res = await http.post(
-        Uri.parse('$API_BASE_URL/solicitudes/crear'),
-        headers: {'Authorization': 'Bearer $token'},
-        body: {
-          'descripcion': _desc.text,
-          'lat': pos.latitude.toString(),
-          'lon': pos.longitude.toString(),
-          'tipo': _tipo,
-          'fotos': _fotos.join(','),
-          'videos': _videoBase64 ?? '',
-          'maquina_id': _maquinaIdSeleccionada ?? '',
-        },
-      ).timeout(const Duration(seconds: 30));
-      if (res.statusCode == 200) {
-        _msg('Solicitud enviada', err: false);
-        if (mounted) Navigator.pop(context, true);
-      } else {
-        final body = jsonDecode(res.body);
-        _msg('Error: ${body['detail'] ?? res.statusCode}');
-      }
-    } catch (e) {
-      _msg('Error de conexión: $e');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  void _msg(String m, {bool err = true}) {
+  void _msg(String m) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m), backgroundColor: err ? Colors.red : Colors.green));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Nueva Solicitud'), backgroundColor: const Color(0xFF004A99)),
-    body: Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(children: [
-        if (_parqueaderoNombre != null)
-          Text('Parqueadero: $_parqueaderoNombre', style: const TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        if (_maquinas.isNotEmpty)
-          DropdownButtonFormField<String>(
-            decoration: const InputDecoration(labelText: 'Máquina (opcional)'),
-            items: _maquinas.map<DropdownMenuItem<String>>((m) {
-              return DropdownMenuItem(value: m['id'].toString(), child: Text(m['nombre']));
-            }).toList(),
-            onChanged: (v) => setState(() => _maquinaIdSeleccionada = v),
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Panel de Administración'),
+        backgroundColor: const Color(0xFF004A99),
+        actions: [
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _cargarDatos),
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.clear();
+              if (mounted) Navigator.pushReplacementNamed(context, '/login');
+            },
           ),
-        const SizedBox(height: 16),
-        TextField(controller: _desc, decoration: const InputDecoration(labelText: 'Descripción', border: OutlineInputBorder()), maxLines: 3),
-        const SizedBox(height: 16),
-        DropdownButtonFormField<String>(
-          value: _tipo,
-          decoration: const InputDecoration(labelText: 'Tipo', border: OutlineInputBorder()),
-          items: const [DropdownMenuItem(value: 'preventivo', child: Text('Preventivo')), DropdownMenuItem(value: 'correctivo', child: Text('Correctivo'))],
-          onChanged: (v) { if (v != null) setState(() => _tipo = v); },
-        ),
-        const SizedBox(height: 16),
-        Row(children: [
-          ElevatedButton.icon(onPressed: _tomarFoto, icon: const Icon(Icons.camera_alt), label: const Text('Foto'), style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFE30613), foregroundColor: Colors.white)),
-          const SizedBox(width: 8),
-          ElevatedButton.icon(onPressed: _grabarVideo, icon: const Icon(Icons.videocam), label: const Text('Video'), style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white)),
-        ]),
-        const SizedBox(height: 8),
-        if (_videoBase64 != null) const Chip(label: Text('Video adjunto')),
-        Wrap(children: _fotos.map((b) => Padding(padding: const EdgeInsets.all(4), child: Image.memory(base64Decode(b), width: 80, height: 80, fit: BoxFit.cover))).toList()),
-        const Spacer(),
-        SizedBox(width: double.infinity, child: ElevatedButton(onPressed: _loading ? null : _enviar, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFE30613), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 12)), child: _loading ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white)) : const Text('Enviar solicitud'))),
-      ]),
-    ),
-  );
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _error != null
+              ? Center(child: Text('Error: $_error'))
+              : ListView.builder(
+                  itemCount: _solicitudes.length,
+                  itemBuilder: (_, i) {
+                    final s = _solicitudes[i];
+                    return Card(
+                      margin: const EdgeInsets.all(8),
+                      child: ListTile(
+                        title: Text('${s['tipo']} - ${s['estado']}'),
+                        subtitle: Text('${s['descripcion']}\nCliente: ${s['cliente_nombre'] ?? 'N/D'}\nTécnico: ${s['tecnico_nombre'] ?? 'Sin asignar'}'),
+                        isThreeLine: true,
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (s['estado'] == 'pendiente' || s['estado'] == 'asignada')
+                              IconButton(
+                                icon: const Icon(Icons.person_add, color: Colors.blue),
+                                onPressed: () => _asignarTecnico(s),
+                              ),
+                            if (s['estado'] != 'finalizada' && s['estado'] != 'cancelada')
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red),
+                                onPressed: () => _cancelarSolicitud(s),
+                              ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+    );
+  }
 }
