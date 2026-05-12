@@ -253,8 +253,11 @@ def crear_solicitud(
             fotos=fotos, videos=videos)
         db.add(solicitud)
         db.commit()
+        # Guardar datos antes de cerrar la sesión
+        solicitud_id = solicitud.id
+        tecnico_nombre = tecnico.nombre if tecnico else None
         db.close()
-        return {"mensaje": "Solicitud creada", "tecnico": tecnico.nombre if tecnico else "Pendiente de asignación", "solicitud_id": solicitud.id}
+        return {"mensaje": "Solicitud creada", "tecnico": tecnico_nombre or "Pendiente de asignación", "solicitud_id": solicitud_id}
     except HTTPException:
         raise
     except Exception as e:
