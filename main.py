@@ -1,11 +1,11 @@
-from fastapi import FastAPI, HTTPException, Depends, Form, Request
+from fastapi import FastAPI, HTTPException, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime, timedelta, timezone   # ← CORRECCIÓN AQUÍ
+from datetime import datetime, timedelta, timezone
 import bcrypt, jwt, math, os, traceback
 from fpdf import FPDF
 
@@ -195,13 +195,6 @@ def generar_pdf(solicitud_id: int):
     return f"/tmp/solicitud_{solicitud_id}.pdf"
 
 # --------------------- ENDPOINTS ------------------------
-@app.exception_handler(Exception)
-#async def global_exception_handler(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={"detail": f"Internal Server Error: {str(exc)}"}
-    )
-
 @app.get("/")
 def root():
     return {"mensaje": "ParkOps API funcionando"}
@@ -262,12 +255,10 @@ def crear_solicitud(
         db.commit()
         db.close()
         return {"mensaje": "Solicitud creada", "tecnico": tecnico.nombre if tecnico else "Pendiente de asignación", "solicitud_id": solicitud.id}
-    except Exception as e:
-        traceback.print_exc()  # ← esto imprime el error completo en los logs de Render
-        raise HTTPException(500, f"Error al crear solicitud: {str(e)}")
     except HTTPException:
         raise
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(500, f"Error al crear solicitud: {str(e)}")
 
 @app.get("/api/solicitudes")
