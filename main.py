@@ -196,7 +196,7 @@ def generar_pdf(solicitud_id: int):
 
 # --------------------- ENDPOINTS ------------------------
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
+#async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
         content={"detail": f"Internal Server Error: {str(exc)}"}
@@ -262,6 +262,9 @@ def crear_solicitud(
         db.commit()
         db.close()
         return {"mensaje": "Solicitud creada", "tecnico": tecnico.nombre if tecnico else "Pendiente de asignación", "solicitud_id": solicitud.id}
+    except Exception as e:
+        traceback.print_exc()  # ← esto imprime el error completo en los logs de Render
+        raise HTTPException(500, f"Error al crear solicitud: {str(e)}")
     except HTTPException:
         raise
     except Exception as e:
